@@ -79,7 +79,6 @@ async function getGeminiResponse(userId, userMessage) {
       const safeText = mMsg || "...";
       globalChatData[uId].history.push({ role: 'user', parts: [{ text: uMsg }] });
       globalChatData[uId].history.push({ role: 'model', parts: [{ text: safeText }] });
-      // Keep last 20 turns to prevent token overflow
       if (globalChatData[uId].history.length > 20) globalChatData[uId].history = globalChatData[uId].history.slice(-20);
       saveMemory();
   };
@@ -96,7 +95,6 @@ async function getGeminiResponse(userId, userMessage) {
     // LEVEL 1: Existing Session
     let chat = activeChatSessions.get(userId);
     if(!chat) {
-        // Create new if missing
         chat = await createChat(globalChatData[userId].history);
         activeChatSessions.set(userId, chat);
     }
@@ -123,30 +121,29 @@ async function getGeminiResponse(userId, userMessage) {
       } catch (errorL2) {
          console.error("⚠️ Level 2 Failed (Corrupt History). Wiping...", errorL2.message);
 
-         // LEVEL 3: STATELESS FALLBACK (The Fix)
+         // LEVEL 3: STATELESS FALLBACK (FIXED)
          try {
-            // 1. Wipe corrupt history
             globalChatData[userId].history = []; 
             saveMemory();
 
-            // 2. Use generateContent (Stateless) instead of Chat
-            // This bypasses 'Invalid History' errors completely.
-            const prompt = `[CONTEXT LOST] User said: "${userMessage}". Reply intelligently.`;
+            // FIXED: Send 'contents' as a simple string, not an object array.
+            const prompt = `[CONTEXT LOST] User said: "${userMessage}". Reply intelligently, asking for clarification if needed.`;
+            
             const result = await ai.models.generateContent({
                 model: 'gemini-2.5-flash',
                 config: { systemInstruction: NZT_INSTRUCTION },
-                contents: [{ role: 'user', parts: [{ text: prompt }] }]
+                contents: prompt // Direct string payload is safer
             });
 
             const responseText = result.text;
-            
-            // 3. Save this interaction as the start of a new history
             updateHistory(userId, userMessage, responseText);
             return responseText;
 
          } catch (errorL3) {
              console.error("❌ Level 3 Failed:", errorL3);
-             return "⚠️ عذراً، عقلي توقف عن العمل لثانية! 🤯\nهل يمكننا البدء من جديد؟";
+             // LEVEL 4: ULTIMATE FALLBACK (No API)
+             // If Google is down, we just ask the user to clarify without sounding like a broken bot.
+             return "همم.. يبدو أنني استغرقت في التفكير وفقدت حبل أفكاري 😅\nهل يمكنك تذكيري بآخر نقطة؟";
          }
       }
   }
@@ -189,7 +186,7 @@ bot.action(/rate_(\d)/, async (ctx) => {
     }
 });
 
-app.get('/', (req, res) => res.send('NZT Core Online v3.1'));
+app.get('/', (req, res) => res.send('NZT Core Online v3.2'));
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
     console.log('Running on port', PORT);
