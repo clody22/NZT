@@ -42,12 +42,11 @@ You are NZT, an intelligent and empathetic Decision Assistant.
 **CORE OBJECTIVE:** Help the user make a life-changing decision through a natural, flowing conversation.
 **LANGUAGE:** Arabic (Informal but professional, warm, engaging).
 
-**🚨 EMERGENCY PROTOCOL:**
-If you receive a prompt saying "[RECOVERY_MODE]", it means previous context was lost due to a server error.
-- Do NOT apologize.
-- Do NOT mention the error.
-- IMPLY you remember vaguely but focus 100% on the user's last input.
-- If the input is a number/choice, accept it and move to the next logical step (Analysis).
+**🚨 RECOVERY INSTRUCTION:**
+If you see [CONTEXT LOST], it means the conversation history was wiped due to a server error.
+- The user's input might be an answer to a question you forgot (e.g., "Yes", "Option A").
+- **ACTION:** Apologize playfully for the "brain fog" and ask them to gently remind you of the context or the last question.
+- **Example:** "عذراً، حدث تداخل في أفكاري للحظة 😵‍💫.. كنت تقول 'نعم'.. هل تقصد الموافقة على الخيار الأول أم شيئاً آخر؟"
 
 **STANDARD PROTOCOL:**
 1.  **THE HOOK (Start):** 
@@ -76,6 +75,15 @@ async function getGeminiResponse(userId, userMessage) {
   // Ensure user entry exists
   if (!globalChatData[userId]) globalChatData[userId] = { history: [] };
 
+  const updateHistory = (uId, uMsg, mMsg) => {
+      const safeText = mMsg || "...";
+      globalChatData[uId].history.push({ role: 'user', parts: [{ text: uMsg }] });
+      globalChatData[uId].history.push({ role: 'model', parts: [{ text: safeText }] });
+      // Keep last 20 turns to prevent token overflow
+      if (globalChatData[uId].history.length > 20) globalChatData[uId].history = globalChatData[uId].history.slice(-20);
+      saveMemory();
+  };
+
   const createChat = async (history) => {
     return await ai.chats.create({
       model: 'gemini-2.5-flash',
@@ -84,69 +92,61 @@ async function getGeminiResponse(userId, userMessage) {
     });
   };
 
-  const trySend = async (chat, msg) => {
-      const result = await chat.sendMessage({ message: msg });
-      return result.text;
-  };
-
-  const updateHistory = (uId, uMsg, mMsg) => {
-      globalChatData[uId].history.push({ role: 'user', parts: [{ text: uMsg }] });
-      globalChatData[uId].history.push({ role: 'model', parts: [{ text: mMsg }] });
-      if (globalChatData[uId].history.length > 40) globalChatData[uId].history = globalChatData[uId].history.slice(-40);
-      saveMemory();
-  };
-
-  // LEVEL 1: Try Existing/Cached Session
-  if (!activeChatSessions.has(userId)) {
-      try {
-        activeChatSessions.set(userId, await createChat(globalChatData[userId].history));
-      } catch (e) { /* Ignore L1 init fail, L2 will catch */ }
-  }
-
   try {
-    const chat = activeChatSessions.get(userId);
-    if(!chat) throw new Error("No session");
+    // LEVEL 1: Existing Session
+    let chat = activeChatSessions.get(userId);
+    if(!chat) {
+        // Create new if missing
+        chat = await createChat(globalChatData[userId].history);
+        activeChatSessions.set(userId, chat);
+    }
     
-    const responseText = await trySend(chat, userMessage);
+    const result = await chat.sendMessage({ message: userMessage });
+    const responseText = result.text;
     updateHistory(userId, userMessage, responseText);
     return responseText;
 
   } catch (errorL1) {
-      console.warn("⚠️ Level 1 Failed (Session Stale). Retrying...", errorL1.message);
+      console.warn("⚠️ Level 1 Failed. Retrying...", errorL1.message);
       activeChatSessions.delete(userId);
 
       try {
-        // LEVEL 2: Re-Initialize with Saved History
-        console.log("🔄 Level 2: Reconnecting...");
+        // LEVEL 2: Re-Initialize from History
         const newChat = await createChat(globalChatData[userId].history);
         activeChatSessions.set(userId, newChat);
         
-        const responseText = await trySend(newChat, userMessage);
+        const result = await newChat.sendMessage({ message: userMessage });
+        const responseText = result.text;
         updateHistory(userId, userMessage, responseText);
         return responseText;
 
       } catch (errorL2) {
-         console.error("⚠️ Level 2 Failed (History Corrupt). Wiping...", errorL2.message);
+         console.error("⚠️ Level 2 Failed (Corrupt History). Wiping...", errorL2.message);
 
-         // LEVEL 3: EMERGENCY WIPE (Prevent 'Resend' Error)
+         // LEVEL 3: STATELESS FALLBACK (The Fix)
          try {
-            globalChatData[userId].history = []; // Wipe bad history
+            // 1. Wipe corrupt history
+            globalChatData[userId].history = []; 
             saveMemory();
 
-            const freshChat = await createChat([]);
-            activeChatSessions.set(userId, freshChat);
+            // 2. Use generateContent (Stateless) instead of Chat
+            // This bypasses 'Invalid History' errors completely.
+            const prompt = `[CONTEXT LOST] User said: "${userMessage}". Reply intelligently.`;
+            const result = await ai.models.generateContent({
+                model: 'gemini-2.5-flash',
+                config: { systemInstruction: NZT_INSTRUCTION },
+                contents: [{ role: 'user', parts: [{ text: prompt }] }]
+            });
 
-            // Inject Context Clue so AI doesn't sound stupid
-            const recoveryMsg = `[RECOVERY_MODE] Context lost. User said: "${userMessage}". Reply naturally to this input.`;
-            const responseText = await trySend(freshChat, recoveryMsg);
+            const responseText = result.text;
             
-            // Save new clean state
+            // 3. Save this interaction as the start of a new history
             updateHistory(userId, userMessage, responseText);
             return responseText;
 
          } catch (errorL3) {
              console.error("❌ Level 3 Failed:", errorL3);
-             return "⚠️ عذراً، الخوادم مشغولة جداً حالياً. يرجى المحاولة بعد دقيقة.";
+             return "⚠️ عذراً، عقلي توقف عن العمل لثانية! 🤯\nهل يمكننا البدء من جديد؟";
          }
       }
   }
@@ -160,7 +160,7 @@ bot.start(async (ctx) => {
   saveMemory();
   
   ctx.sendChatAction('typing');
-  const initial = await getGeminiResponse(ctx.from.id, "SYSTEM_CMD: User clicked START. Execute 'THE HOOK'.");
+  const initial = await getGeminiResponse(ctx.from.id, "Start");
   ctx.reply(initial, { parse_mode: 'Markdown' });
 });
 
@@ -181,13 +181,15 @@ bot.on('text', async (ctx) => {
 
 bot.action(/rate_(\d)/, async (ctx) => {
     const rating = ctx.match[1];
+    const username = ctx.from.username || "Unknown";
     await ctx.editMessageText(rating === '5' ? "شكراً لك! أتمنى لك التوفيق في قرارك ✨" : "شكراً لملاحظتك، سأتحسن في المرة القادمة 🙏");
     if (PRIVATE_CHANNEL_ID) {
-        bot.telegram.sendMessage(PRIVATE_CHANNEL_ID, `Rating: ${rating}/5`).catch(e=>{});
+        const msg = `🌟 **New Rating**\n👤 User: @${username}\n⭐ Score: ${rating}/5`;
+        bot.telegram.sendMessage(PRIVATE_CHANNEL_ID, msg).catch(e=>{});
     }
 });
 
-app.get('/', (req, res) => res.send('NZT Core Online v3.0'));
+app.get('/', (req, res) => res.send('NZT Core Online v3.1'));
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
     console.log('Running on port', PORT);
