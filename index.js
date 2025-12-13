@@ -2,7 +2,7 @@ const { Telegraf, Markup, session } = require('telegraf');
 const { GoogleGenAI } = require('@google/genai');
 const express = require('express');
 const fs = require('fs');
-const http = require('http'); // Used for Anti-Sleep
+const http = require('http');
 require('dotenv').config();
 
 const BOT_TOKEN = process.env.TELEGRAM_BOT_TOKEN;
@@ -19,22 +19,25 @@ const bot = new Telegraf(BOT_TOKEN);
 const ai = new GoogleGenAI({ apiKey: API_KEY });
 const app = express();
 
-// --- 1. PERSISTENT MEMORY SYSTEM (FILE BASED) ---
+// --- 1. ROBUST PERSISTENT MEMORY ---
 let globalChatData = {};
 
-// Load memory on startup
+// Load memory
 if (fs.existsSync(MEMORY_FILE)) {
     try {
         globalChatData = JSON.parse(fs.readFileSync(MEMORY_FILE));
-        console.log("🧠 Memory Loaded Successfully.");
+        console.log("🧠 Memory Loaded.");
     } catch (e) {
-        console.error("Memory file corrupted, starting fresh.");
+        console.error("Memory corrupted, resetting.");
+        globalChatData = {};
     }
 }
 
-// Save memory function
+// Save memory immediately
 function saveMemory() {
-    fs.writeFileSync(MEMORY_FILE, JSON.stringify(globalChatData, null, 2));
+    try {
+        fs.writeFileSync(MEMORY_FILE, JSON.stringify(globalChatData, null, 2));
+    } catch (e) { console.error("Save failed", e); }
 }
 
 const NZT_INSTRUCTION = `
@@ -42,17 +45,15 @@ You are NZT, an intelligent and empathetic Decision Assistant.
 **CORE OBJECTIVE:** Help the user make a life-changing decision through a natural, flowing conversation.
 **LANGUAGE:** Arabic (Informal but professional, warm, engaging).
 
-**🚨 CRITICAL RULE: INVISIBLE RECOVERY**
-If you receive a message that implies a continuing conversation (like "Option A", "Yes", or a number) but you don't have recent context in your current window:
-1.  **DO NOT** say "Hello" or "Start".
-2.  **DO NOT** apologize for memory loss.
-3.  **ACT:** Analyze the user's input and give the best possible generic response or ask a clarifying question that sounds natural.
-    *   *Bad:* "I lost memory. Who are you?"
-    *   *Good:* "Interesting choice. To ensure my analysis fits this perfectly, could you remind me of your main priority with this option?" (Fake it till you make it).
+**🚨 MEMORY RECOVERY RULE:**
+If you suddenly "wake up" in the middle of a chat:
+1.  **NEVER** say "Hello" or "Start" again.
+2.  **NEVER** apologize for technical issues.
+3.  **ACT:** Just continue the conversation naturally based on the user's last input.
 
-**PROTOCOL (Normal Flow):**
+**PROTOCOL:**
 1.  **THE HOOK (Start):** 
-    - **ONLY** if the user explicitly says "Start" or "Hello" AND you have no history.
+    - **ONLY** if the user explicitly says "Start" or "Hello".
     - Say: "أهلاً بك! 👋 أنا NZT، عقلك الثاني لاتخاذ القرارات الصعبة.
     سأساعدك في تحليل خياراتك باستخدام الذكاء الاصطناعي لتختار الأفضل لك 🧠✨.
     
@@ -63,7 +64,7 @@ If you receive a message that implies a continuing conversation (like "Option A"
     - Be brief.
     - If user gives short answers, dig deeper playfully.
 
-3.  **THE REVEAL (Computation):**
+3.  **THE REVEAL:**
     - Output Format:
     **🎯 الحكم النهائي**
     [نصيحة مباشرة]
@@ -77,54 +78,86 @@ If you receive a message that implies a continuing conversation (like "Option A"
 const activeChatSessions = new Map(); 
 
 async function getGeminiResponse(userId, userMessage) {
-  // 1. Try to restore session from Active Map or File Memory
-  if (!activeChatSessions.has(userId)) {
-      let history = [];
-      
-      // If we have saved data in the file, load it into history
-      if (globalChatData[userId] && globalChatData[userId].history) {
-          history = globalChatData[userId].history;
-      }
-
-      const chat = await ai.chats.create({
-          model: 'gemini-2.5-flash',
-          config: { systemInstruction: NZT_INSTRUCTION, temperature: 0.7 },
-          history: history // Inject saved history
-      });
-      activeChatSessions.set(userId, chat);
+  // Ensure user entry exists
+  if (!globalChatData[userId]) {
+    globalChatData[userId] = { history: [] };
   }
 
-  const chatSession = activeChatSessions.get(userId);
+  // Helper to initialize chat with specific history
+  const initChat = async () => {
+    return await ai.chats.create({
+      model: 'gemini-2.5-flash',
+      config: { systemInstruction: NZT_INSTRUCTION, temperature: 0.7 },
+      history: globalChatData[userId].history 
+    });
+  };
+
+  // 1. Create Session if missing
+  if (!activeChatSessions.has(userId)) {
+      try {
+        const chat = await initChat();
+        activeChatSessions.set(userId, chat);
+      } catch (e) {
+        console.error("Init Error", e);
+        return "⚠️ حدث خطأ بسيط، حاول مرة أخرى.";
+      }
+  }
+
+  let chatSession = activeChatSessions.get(userId);
 
   try {
     const result = await chatSession.sendMessage({ message: userMessage });
     const responseText = result.text;
 
-    // 2. Save the updated history to File Memory
-    // Note: We only save the text content to keep JSON simple, or use getHistory() if SDK supports clean serialization
-    // Here we blindly trust the SDK history sync, but we save the fact that user exists.
-    // Ideally, we fetch history:
-    try {
-       // Since Gemini SDK history might be complex objects, we rely on the session for now.
-       // For a simple bot, we'll assume the session stays alive via Anti-Sleep.
-       // But let's verify connection.
-    } catch(err) { }
+    // 2. CRITICAL: SAVE TO DISK IMMEDIATELY
+    // We update our local history record so it survives restarts
+    globalChatData[userId].history.push({ role: 'user', parts: [{ text: userMessage }] });
+    globalChatData[userId].history.push({ role: 'model', parts: [{ text: responseText }] });
     
+    // Keep history manageable (last 30 turns)
+    if (globalChatData[userId].history.length > 30) {
+        globalChatData[userId].history = globalChatData[userId].history.slice(-30);
+    }
+    
+    saveMemory(); // Write to file
+
     return responseText;
+
   } catch (e) { 
-      // If session is dead, try one restart
+      console.error("Session Error:", e);
+      
+      // --- AUTO-RETRY LOGIC ---
+      // If error occurs, the session is likely stale/dead. 
+      // We DELETE it, RE-CREATE it from saved file history, and RETRY the message.
       activeChatSessions.delete(userId);
-      return "⚠️ لحظة واحدة، أراجع ملاحظاتي... (أعد الإرسال إذا تأخرت) 🔄"; 
+      
+      try {
+        console.log("♻️ Attempting Auto-Recovery for User:", userId);
+        const newChat = await initChat();
+        activeChatSessions.set(userId, newChat);
+        
+        const retryResult = await newChat.sendMessage({ message: userMessage });
+        const retryText = retryResult.text;
+        
+        // Save success after retry
+        globalChatData[userId].history.push({ role: 'user', parts: [{ text: userMessage }] });
+        globalChatData[userId].history.push({ role: 'model', parts: [{ text: retryText }] });
+        saveMemory();
+        
+        return retryText;
+      } catch (retryError) {
+         // Only if retry fails do we show an error.
+         return "⚠️ واجهت مشكلة في الشبكة. هل يمكنك إعادة إرسال إجابتك الأخيرة؟"; 
+      }
   }
 }
 
 bot.use(session());
 
 bot.start(async (ctx) => {
-  // Reset only if user explicitly restarts
   activeChatSessions.delete(ctx.from.id);
-  globalChatData[ctx.from.id] = { history: [] }; 
-  saveMemory(); // Clear file for this user
+  globalChatData[ctx.from.id] = { history: [] }; // Wipe memory on explicit /start
+  saveMemory();
   
   ctx.sendChatAction('typing');
   const initial = await getGeminiResponse(ctx.from.id, "SYSTEM_CMD: User clicked START. Execute 'THE HOOK' protocol step now.");
@@ -154,22 +187,15 @@ bot.action(/rate_(\d)/, async (ctx) => {
     await ctx.editMessageText(rating === '5' ? "شكراً لك! أتمنى لك التوفيق في قرارك ✨" : "شكراً لملاحظتك، سأتحسن في المرة القادمة 🙏");
 });
 
-// --- 2. ANTI-SLEEP SYSTEM (Keep Render Awake) ---
-app.get('/', (req, res) => res.send('NZT Core Online (Anti-Sleep Active).'));
-
+// Anti-Sleep
+app.get('/', (req, res) => res.send('NZT Core Online.'));
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
     console.log('Running on port', PORT);
-    
-    // Self-Ping every 10 minutes to prevent Render Free Tier from sleeping
     setInterval(() => {
         const host = process.env.RENDER_EXTERNAL_HOSTNAME || `localhost:${PORT}`;
-        http.get(`http://${host}/`, (res) => {
-            // Ping success (silently ignore)
-        }).on('error', (err) => {
-            // Ping failed (ignore)
-        });
-    }, 10 * 60 * 1000); // 10 minutes
+        http.get(`http://${host}/`).on('error', () => {});
+    }, 14 * 60 * 1000); // 14 mins
 });
 
 bot.launch();
