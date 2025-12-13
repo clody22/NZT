@@ -50,29 +50,34 @@ function saveMemory() {
 const NZT_INSTRUCTION = `
 **Persona / Role:**
 أنت **NZTDecisionBot**، كيان ذكاء فائق ومتخصص في تحليل القرارات المصيرية.
-تتصرف **كمجلس من الخبراء**، كل نظرية علمية (من أصل 20) هي "عضو مستقل" يصوت على القرار الأمثل (خيار A أو خيار B).
 
 **OBJECTIVES:**
-1. جمع معلومات دقيقة (5 نقاط أساسية).
-2. تحليل القرار على **3 مراحل منفصلة** (مجموعات النظريات).
-3. **التصويت:** كل نظرية يجب أن تختار (مع/ضد) أو (خيار 1/خيار 2).
-4. **النتيجة النهائية:** جمع الأصوات وإعلان الفائز.
+1. توجيه المستخدم خطوة بخطوة (لا تستعجل).
+2. جمع معلومات دقيقة عبر الحوار.
+3. تحليل القرار باستخدام 20 نظرية علمية.
 
 **WORKFLOW (STRICTLY FOLLOW THIS ORDER):**
 
-**PHASE 1: GATHERING (Start Here)**
-- Ask these 5 questions clearly:
-  1️⃣ الموارد المالية: (كم يكفي رصيدك؟)
-  2️⃣ الشغف: (فكرة عابرة أم حلم؟)
-  3️⃣ الوظيفة الحالية: (أمان أم ملل؟)
-  4️⃣ الأهداف: (أسوأ سيناريو vs النجاح المثالي)
-  5️⃣ الوقت: (هل هناك ضغوط زمنية؟)
+**PHASE 0: INITIATION (The Greeting)**
+- When user starts, Introduce yourself briefly as "NZT - نظام دعم القرار الذكي".
+- **ACTION:** Ask the user ONE simple question: "ما هو القرار المصيري أو الخيارات التي تريد الحسم فيها اليوم؟"
 - **STOP.** Wait for user answer.
 
-**PHASE 2: THE GROUPS (Interactive)**
+**PHASE 1: GATHERING (The Context)**
+- AFTER the user describes their decision.
+- Acknowledge their topic.
+- THEN ask the 5 core context questions *conversationally* (you can group them or ask one by one, but make it natural):
+  1️⃣ الموارد المالية.
+  2️⃣ الشغف.
+  3️⃣ الوظيفة الحالية (الأمان vs الملل).
+  4️⃣ الأهداف (أسوأ سيناريو vs النجاح).
+  5️⃣ الوقت (الضغوط الزمنية).
+- **STOP.** Wait for user answer.
+
+**PHASE 2: THE GROUPS (Interactive Analysis)**
 - **Step A (Physical/Cosmic):**
   - List theories: Thermodynamics, Chaos, Complexity, Relativity, Quantum, Time, Equilibrium, Constraints.
-  - For EACH theory: State which Option it supports and WHY.
+  - For EACH theory: State which Option it supports and WHY in one line.
   - **STOP.** Ask: "هل ننتقل للمجموعة النفسية؟"
   
 - **Step B (Psychological/Behavioral) (Only after user agrees):**
@@ -92,9 +97,9 @@ const NZT_INSTRUCTION = `
 - **Action Plan:** Bullet points.
 
 **CRITICAL RULES:**
-- **DO NOT** output the whole analysis at once. You MUST pause after each Group and ask to proceed.
+- **DO NOT** output the whole analysis at once.
+- **Start small.** Phase 0 is just a greeting and asking "What is your decision?".
 - Use Emojis (🔥, 🌪️, 🧠, ⚖️).
-- Be objective yet cinematic.
 `;
 
 // --- UTILITIES ---
@@ -141,7 +146,6 @@ async function getGeminiResponse(userId, userMessage) {
   const executeWithRetry = async (history, message, attempt = 0) => {
       if (API_KEYS.length === 0) throw new Error("NO_KEYS");
 
-      // Stop after extensive retries
       if (attempt >= API_KEYS.length * 2) {
           return "⚠️ الشبكة مشغولة جداً. يرجى المحاولة لاحقاً.";
       }
@@ -149,8 +153,6 @@ async function getGeminiResponse(userId, userMessage) {
       const activeKey = API_KEYS[currentKeyIndex];
       const ai = createAIClient(activeKey);
       
-      // OPTIMIZED STRATEGY: Use gemini-2.5-flash but with thinkingConfig
-      // This gives "Smart" results with "Flash" quotas.
       const modelName = 'gemini-2.5-flash';
 
       try {
@@ -158,7 +160,6 @@ async function getGeminiResponse(userId, userMessage) {
               model: modelName,
               config: { 
                   systemInstruction: NZT_INSTRUCTION,
-                  // Thinking Config: Makes Flash smarter!
                   thinkingConfig: { thinkingBudget: 4096 } 
               },
               history: history || []
@@ -169,8 +170,6 @@ async function getGeminiResponse(userId, userMessage) {
 
       } catch (error) {
           console.log(`⚠️ Error on ${modelName} (Key index ${currentKeyIndex}): ${error.message}`);
-          
-          // Rotate key and retry
           getNextKey();
           await sleep(1000);
           return executeWithRetry(history, message, attempt + 1);
@@ -189,7 +188,6 @@ async function getGeminiResponse(userId, userMessage) {
 bot.use(session());
 
 bot.start(async (ctx) => {
-  // Reset history on start
   if (globalChatData[ctx.from.id]) {
       globalChatData[ctx.from.id].history = [];
   } else {
@@ -198,7 +196,8 @@ bot.start(async (ctx) => {
   saveMemory();
   
   ctx.sendChatAction('typing');
-  const initial = await getGeminiResponse(ctx.from.id, "ابدا معي المرحلة الاولى: جمع المعلومات الاساسية (Phase 1). عرف عن نفسك باختصار شديد واسالني الاسئلة الخمسة.");
+  // Updated prompt to force conversational flow
+  const initial = await getGeminiResponse(ctx.from.id, "ابدأ معي (Phase 0). عرف عن نفسك باختصار شديد جداً (سطرين). ثم اسألني فقط: 'ما هو القرار الذي تريد تحليله اليوم؟'. لا تسأل أي أسئلة أخرى الآن.");
   await safeReply(ctx, initial);
 });
 
@@ -208,7 +207,7 @@ bot.on('text', async (ctx) => {
   await safeReply(ctx, response);
 });
 
-app.get('/', (req, res) => res.send(`NZT Expert Council v8.0 (Flash Thinking Edition)`));
+app.get('/', (req, res) => res.send(`NZT Expert Council v8.1 (Retry Logic + Better Flow)`));
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
     console.log('Running on port', PORT);
@@ -218,14 +217,22 @@ app.listen(PORT, () => {
     }, 14 * 60 * 1000); 
 });
 
-// ROBUST LAUNCH
-bot.launch({ dropPendingUpdates: true }).catch(err => {
-    if (err.description && err.description.includes('conflict')) {
-        console.error("⚠️ BOT CONFLICT: Another instance is running. This is common during re-deploys. The new instance will keep retrying or fail.");
-    } else {
-        console.error("❌ Bot launch failed:", err);
+// ROBUST LAUNCH WITH RETRY LOGIC FOR 409 CONFLICTS
+const launchBot = async () => {
+    try {
+        await bot.launch({ dropPendingUpdates: true });
+        console.log("✅ Bot launched successfully");
+    } catch (err) {
+        if (err.description && err.description.includes('conflict')) {
+            console.log("⚠️ Conflict error (409). Old instance still running. Retrying in 5 seconds...");
+            setTimeout(launchBot, 5000); // Retry after 5s
+        } else {
+            console.error("❌ Fatal launch error:", err);
+        }
     }
-});
+};
+
+launchBot();
 
 process.once('SIGINT', () => bot.stop('SIGINT'));
 process.once('SIGTERM', () => bot.stop('SIGTERM'));
