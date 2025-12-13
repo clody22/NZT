@@ -31,10 +31,12 @@ const app = express();
 // --- 1. PERSISTENT MEMORY ---
 let globalChatData = {};
 
+// Attempt to load memory on startup
 if (fs.existsSync(MEMORY_FILE)) {
     try {
         globalChatData = JSON.parse(fs.readFileSync(MEMORY_FILE));
     } catch (e) {
+        console.error("Failed to load memory file, starting fresh.");
         globalChatData = {};
     }
 }
@@ -61,10 +63,6 @@ You are NZT, an intelligent and empathetic Decision Assistant.
 **THEORIES TO APPLY:**
 Use the following 20 theories to analyze the decision:
 ${THEORIES_LIST}
-
-**🚨 RECOVERY INSTRUCTION:**
-If you see [CONTEXT LOST], it means the conversation history was wiped due to a server error.
-- **ACTION:** Apologize playfully for the "brain fog" and ask them to gently remind you of the context.
 
 **STANDARD PROTOCOL:**
 1.  **THE HOOK (Start):** 
@@ -161,7 +159,6 @@ async function getGeminiResponse(userId, userMessage) {
               
               // Adjust index
               currentKeyIndex = currentKeyIndex % API_KEYS.length;
-              // Retry immediately without incrementing attempt count (since we didn't really try)
               return executeWithRetry(history, message, attempt);
           }
 
@@ -198,15 +195,7 @@ async function getGeminiResponse(userId, userMessage) {
           });
           return result.text;
       } catch (error) {
-          const isInvalid = error.status === 400 || (error.message && error.message.includes('expired'));
-          if (isInvalid) {
-               console.error(`❌ Key index ${currentKeyIndex} is DEAD. Removing.`);
-               API_KEYS.splice(currentKeyIndex, 1);
-               if (API_KEYS.length === 0) throw new Error("NO_KEYS_AVAILABLE");
-               currentKeyIndex = currentKeyIndex % API_KEYS.length;
-               return executeStatelessWithRetry(prompt, attempt);
-          }
-
+          // Simplified error handling for stateless
           if (error.status === 429 || (error.message && error.message.includes('429'))) {
               getNextKey();
               await sleep(1000);
@@ -226,21 +215,21 @@ async function getGeminiResponse(userId, userMessage) {
           return "🚦 النظام مزدحم جداً حالياً. يرجى الانتظار دقيقة قبل المحاولة مرة أخرى.";
       }
 
-      console.error("⚠️ Levels 1/2 Failed. Level 3 (Stateless)...", error.message);
+      console.error("⚠️ Levels 1/2 Failed. Level 3 (Fallback)...", error.message);
 
       try {
-        globalChatData[userId].history = []; 
-        saveMemory();
-
-        const prompt = `[CONTEXT LOST] User said: "${userMessage}". Reply intelligently.`;
+        // FIX: DO NOT WIPE HISTORY HERE. 
+        // We try to get a response based on the current message to keep the flow going.
+        const prompt = `User message: "${userMessage}". Previous context might be temporarily unavailable. Answer helpfully.`;
         const responseText = await executeStatelessWithRetry(prompt);
         
+        // Append this interaction to the EXISTING history instead of overwriting it
         updateHistory(userId, userMessage, responseText);
         return responseText;
 
       } catch (errorL3) {
          console.error("❌ Level 3 Failed:", errorL3.message);
-         return "همم.. يبدو أنني استغرقت في التفكير وفقدت حبل أفكاري 😅\nهل يمكنك تذكيري بآخر نقطة؟";
+         return "أواجه صعوبة في الاتصال حالياً 🔌.. هل يمكنك إعادة إرسال رسالتك الأخيرة؟";
       }
   }
 }
@@ -248,6 +237,7 @@ async function getGeminiResponse(userId, userMessage) {
 bot.use(session());
 
 bot.start(async (ctx) => {
+  // Only clear history on explicit /start command
   activeChatSessions.delete(ctx.from.id);
   globalChatData[ctx.from.id] = { history: [] }; 
   saveMemory();
@@ -282,7 +272,7 @@ bot.action(/rate_(\d)/, async (ctx) => {
     }
 });
 
-app.get('/', (req, res) => res.send(`NZT Core v4.1 (Alive Keys: ${API_KEYS.length})`));
+app.get('/', (req, res) => res.send(`NZT Core v4.2 (Alive Keys: ${API_KEYS.length})`));
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
     console.log('Running on port', PORT);
