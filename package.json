@@ -1,7 +1,7 @@
 {
   "name": "nzt-decision-bot",
-  "version": "7.1.0",
-  "description": "NZT Bot Expert Council Edition (Pro Model)",
+  "version": "7.2.0",
+  "description": "NZT Bot Expert Council Edition (Stable)",
   "main": "index.js",
   "scripts": {
     "start": "node index.js"
