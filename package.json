@@ -1,7 +1,7 @@
 {
   "name": "nzt-decision-bot",
-  "version": "5.0.0",
-  "description": "NZT Bot with Long-Term Memory",
+  "version": "6.0.0",
+  "description": "NZT Bot Cinematic Edition",
   "main": "index.js",
   "scripts": {
     "start": "node index.js"
