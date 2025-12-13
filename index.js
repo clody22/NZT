@@ -21,7 +21,7 @@ if (!BOT_TOKEN || API_KEYS.length === 0) {
   process.exit(1);
 }
 
-console.log(`✅ Loaded ${API_KEYS.length} Gemini API Keys. Using Model: gemini-3-pro-preview`);
+console.log(`✅ Loaded ${API_KEYS.length} Gemini API Keys. Primary: gemini-3-pro-preview | Fallback: gemini-2.5-flash`);
 
 const bot = new Telegraf(BOT_TOKEN);
 const app = express();
@@ -137,14 +137,28 @@ async function getGeminiResponse(userId, userMessage) {
       saveMemory();
   };
 
-  const executeWithRetry = async (history, message, attempt = 0) => {
+  // SMART FALLBACK LOGIC
+  const executeWithRetry = async (history, message, attempt = 0, useFallback = false) => {
       if (API_KEYS.length === 0) throw new Error("NO_KEYS");
+
+      // Stop after extensive retries
+      if (attempt >= API_KEYS.length * 2) {
+          if (!useFallback) {
+              console.log("⚠️ All keys failed on Pro. Switching to Flash...");
+              return executeWithRetry(history, message, 0, true);
+          }
+          return "⚠️ الشبكة مشغولة جداً حالياً. حاول بعد دقيقة.";
+      }
+
       const activeKey = API_KEYS[currentKeyIndex];
       const ai = createAIClient(activeKey);
+      
+      // Try Pro first, unless fallback is active
+      const modelName = useFallback ? 'gemini-2.5-flash' : 'gemini-3-pro-preview';
 
       try {
           const chat = await ai.chats.create({
-              model: 'gemini-3-pro-preview', // UPGRADED MODEL
+              model: modelName,
               config: { systemInstruction: NZT_INSTRUCTION },
               history: history || []
           });
@@ -153,12 +167,17 @@ async function getGeminiResponse(userId, userMessage) {
           return result.text;
 
       } catch (error) {
-          if (attempt < 3) {
-              getNextKey();
-              await sleep(1000);
-              return executeWithRetry(history, message, attempt + 1);
+          console.error(`Error on ${modelName} (Key ${currentKeyIndex}): ${error.message}`);
+          
+          // Immediate fallback if model is not found or unsupported
+          if (!useFallback && (error.status === 404 || error.message.includes('not found') || error.message.includes('unsupported'))) {
+              return executeWithRetry(history, message, 0, true);
           }
-          return "⚠️ حدث خطأ في الاتصال بالمجلس. الرجاء إعادة صياغة إجابتك.";
+
+          // Rotate key and retry
+          getNextKey();
+          await sleep(1000);
+          return executeWithRetry(history, message, attempt + 1, useFallback);
       }
   };
 
@@ -193,7 +212,7 @@ bot.on('text', async (ctx) => {
   await safeReply(ctx, response);
 });
 
-app.get('/', (req, res) => res.send(`NZT Expert Council v7.1 Pro (Active)`));
+app.get('/', (req, res) => res.send(`NZT Expert Council v7.2 (Stable + Fallback Active)`));
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
     console.log('Running on port', PORT);
