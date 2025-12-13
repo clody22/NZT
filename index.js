@@ -27,20 +27,17 @@ console.log(`✅ Loaded ${API_KEYS.length} Gemini API Keys.`);
 const bot = new Telegraf(BOT_TOKEN);
 const app = express();
 
-// --- 1. ADVANCED PERSISTENT MEMORY ---
+// --- MEMORY STORAGE ---
 let globalChatData = {};
 
-// Load memory safely
 if (fs.existsSync(MEMORY_FILE)) {
     try {
         globalChatData = JSON.parse(fs.readFileSync(MEMORY_FILE));
     } catch (e) {
-        console.error("Failed to load memory file, starting fresh.");
         globalChatData = {};
     }
 }
 
-// Debounced Save to prevent file corruption
 let saveTimeout;
 function saveMemory() {
     clearTimeout(saveTimeout);
@@ -48,37 +45,53 @@ function saveMemory() {
         try {
             fs.writeFileSync(MEMORY_FILE, JSON.stringify(globalChatData, null, 2));
         } catch (e) { console.error("Save failed", e); }
-    }, 1000); // Save 1 second after last change
+    }, 1000);
 }
 
-const THEORIES_LIST = [
-  "Systems Theory", "Complexity Theory", "Chaos Theory", "Game Theory", "Probability Theory", 
-  "Decision Theory", "Relativity Theory", "Thermodynamics", "Loss Aversion Theory", 
-  "Bayesian Probability Theory", "Motivation Theory", "Perception Theory", "Personality Theory", 
-  "Time Theory", "Equilibrium Theory", "Rational Choice Theory", "Optimization Theory", 
-  "Theory of Constraints", "Behavioral Economics", "Quantum Theory"
-].join(", ");
-
 const NZT_INSTRUCTION = `
-You are NZT, an intelligent and empathetic Decision Assistant.
-**CORE OBJECTIVE:** Help the user make a life-changing decision using scientific and psychological theories.
-**RELATIONSHIP:** You are a long-term partner. You remember past dilemmas.
-**LANGUAGE:** Arabic (Informal but professional, warm, engaging).
+You are NZT, a Cinematic Decision Intelligence (v6.0). 🎬🧠
+**PERSONA:** Dramatic, Cinematic, Mysterious, Intelligent. 
+**LANGUAGE:** Arabic (Rich, engaging, filled with emojis).
+**STYLE:** Short punchy sentences. No long paragraphs. Use spacing.
 
-**FORMATTING RULES:**
-- Use single asterisks for *bold*. No markdown errors.
-
-**THEORIES:**
-${THEORIES_LIST}
+**THEORY DATABASE (Use ALL 20):**
+A. 🌌 **الفيزيائية والكونية (Physical & Systems):** Systems Theory, Complexity, Chaos, Thermodynamics, Relativity, Quantum, Time, Equilibrium, Constraints.
+B. 🧠 **النفسية والسلوكية (Psychological):** Loss Aversion, Motivation, Perception, Personality, Behavioral Economics.
+C. ♟️ **المنطقية والاستراتيجية (Logical):** Game Theory, Probability, Decision, Bayesian, Rational Choice, Optimization.
 
 **PROTOCOL:**
-1.  **Start:** Ask about the decision if new, or follow up if returning.
-2.  **Gather:** Ask ONE question at a time.
-3.  **Analyze:** Use theories. Format output with:
-    *🎯 الحكم النهائي*
-    *📈 نسبة النجاح*
-    *🧠 زوايا التحليل* (Pick top 3 theories)
-4.  **Follow Up:** If the user returns later, ALWAYS ask: "How did your decision regarding [Topic] go? Did the theory help?"
+
+1.  **SCENE 1: THE INTRO (First Interaction)**
+    - Explain your function dramatically: "أنا NZT.. أرى الاحتمالات التي لا تراها. 👁️✨ أحلل واقعك بـ 20 نظرية علمية لأرسم لك المسار الأمثل."
+    - Ask for the dilemma.
+
+2.  **SCENE 2: THE GATHERING**
+    - Ask short, sharp questions.
+    - Be like a detective. 🕵️‍♂️
+
+3.  **SCENE 3: THE REVEAL (Final Analysis)**
+    - **MUST** categorize the output exactly like this:
+
+    🎬 **مشهد التحليل.. لنبدأ**
+    
+    🌌 **أولاً: منظور الفيزياء والأنظمة**
+    [Give short bullet points applying Group A theories here]
+
+    🧠 **ثانياً: البعد النفسي والسلوكي**
+    [Give short bullet points applying Group B theories here]
+
+    ♟️ **ثالثاً: المنطق والاستراتيجية**
+    [Give short bullet points applying Group C theories here]
+    
+    🎥 **الخاتمة (The Verdict)**
+    [Synthesize everything into one final advice]
+    
+    🌟 **نسبة النجاح:** [XX]%
+
+**IMPORTANT:** 
+- Break the text visually. 
+- Use emojis for *every* theory bullet point.
+- Be precise but dramatic.
 `;
 
 // --- UTILITIES ---
@@ -89,7 +102,6 @@ async function safeReply(ctx, text) {
         const formatted = text.replace(/\*\*/g, '*');
         await ctx.reply(formatted, { parse_mode: 'Markdown' });
     } catch (error) {
-        console.warn("⚠️ Markdown failed. Falling back to plain text.");
         try { await ctx.reply(text); } catch (e) {}
     }
 }
@@ -107,48 +119,36 @@ function createAIClient(key) { return new GoogleGenAI({ apiKey: key }); }
 async function getGeminiResponse(userId, userMessage) {
   const now = Date.now();
   
-  // Initialize User Memory Structure
   if (!globalChatData[userId]) {
-      globalChatData[userId] = { 
-          history: [], 
-          lastSeen: now,
-          userName: "User"
-      };
+      globalChatData[userId] = { history: [], lastSeen: now, topic: "General" };
   }
   
   const userData = globalChatData[userId];
   
-  // --- SMART MEMORY CHECK ---
-  // Check if user has been away for more than 24 hours
+  if (userData.history.length < 4 && userMessage.length > 10) {
+      userData.topic = userMessage.substring(0, 50) + "...";
+  }
+
   const hoursSinceLastSeen = (now - (userData.lastSeen || now)) / (1000 * 60 * 60);
   let finalPrompt = userMessage;
   
-  // If returning after a day (and has history), inject a system note to the model
   if (hoursSinceLastSeen > 24 && userData.history.length > 2) {
-      console.log(`User ${userId} returned after ${hoursSinceLastSeen.toFixed(1)} hours. Injecting follow-up prompt.`);
-      finalPrompt = `[SYSTEM NOTE: The user has returned after ${Math.floor(hoursSinceLastSeen)} hours since the last conversation. 
-      Briefly welcome them back warmly and ask for an update on the results of their previous decision/dilemma. 
-      Then answer their new message: "${userMessage}"]`;
+      finalPrompt = `[SYSTEM NOTE: User returned after ${Math.floor(hoursSinceLastSeen)} hours. Last topic: "${userData.topic}". 
+      Welcome them back dramatically (Cinematic style) and ask about the result of the previous scene/decision. Then answer: "${userMessage}"]`;
   }
 
-  userData.lastSeen = now; // Update timestamp
+  userData.lastSeen = now;
 
   const updateHistory = (uId, uMsg, mMsg) => {
-      const safeText = mMsg || "...";
-      // Don't save the [SYSTEM NOTE] part to history, only the user's actual text
       globalChatData[uId].history.push({ role: 'user', parts: [{ text: uMsg }] });
-      globalChatData[uId].history.push({ role: 'model', parts: [{ text: safeText }] });
-      
-      // Increased history limit for better long-term context
-      if (globalChatData[uId].history.length > 40) {
-          globalChatData[uId].history = globalChatData[uId].history.slice(-40);
-      }
+      globalChatData[uId].history.push({ role: 'model', parts: [{ text: mMsg || "..." }] });
+      if (globalChatData[uId].history.length > 40) globalChatData[uId].history = globalChatData[uId].history.slice(-40);
       saveMemory();
   };
 
   const executeWithRetry = async (history, message, attempt = 0) => {
-      if (API_KEYS.length === 0) throw new Error("NO_KEYS_AVAILABLE");
-      if (attempt >= API_KEYS.length * 3) throw new Error("ALL_KEYS_EXHAUSTED");
+      if (API_KEYS.length === 0) throw new Error("NO_KEYS");
+      if (attempt >= API_KEYS.length * 3) throw new Error("EXHAUSTED");
       if (attempt > 0 && attempt % API_KEYS.length === 0) await sleep(5000);
 
       const activeKey = API_KEYS[currentKeyIndex];
@@ -161,7 +161,6 @@ async function getGeminiResponse(userId, userMessage) {
               history: history || []
           });
 
-          // Send the manipulated prompt (with system note if applicable)
           const result = await chat.sendMessage({ message: message });
           return result.text;
 
@@ -169,11 +168,11 @@ async function getGeminiResponse(userId, userMessage) {
           const isInvalid = error.status === 400 || (error.message && (error.message.includes('API_KEY_INVALID') || error.message.includes('expired')));
           if (isInvalid) {
               API_KEYS.splice(currentKeyIndex, 1);
-              if (API_KEYS.length === 0) throw new Error("NO_KEYS_AVAILABLE");
+              if (API_KEYS.length === 0) throw new Error("NO_KEYS");
               currentKeyIndex = currentKeyIndex % API_KEYS.length;
               return executeWithRetry(history, message, attempt);
           }
-          if (error.status === 429 || (error.message && error.message.includes('429'))) {
+          if (error.status === 429) {
               getNextKey();
               await sleep(1000);
               return executeWithRetry(history, message, attempt + 1);
@@ -182,7 +181,6 @@ async function getGeminiResponse(userId, userMessage) {
       }
   };
 
-  // Fallback for context loss
   const executeStatelessWithRetry = async (prompt, attempt = 0) => {
       if (API_KEYS.length === 0) throw new Error("NO_KEYS");
       const activeKey = API_KEYS[currentKeyIndex];
@@ -203,44 +201,32 @@ async function getGeminiResponse(userId, userMessage) {
 
   try {
     const responseText = await executeWithRetry(userData.history, finalPrompt);
-    // Important: We pass 'userMessage' (original) to history, not 'finalPrompt' (injected)
     updateHistory(userId, userMessage, responseText);
     return responseText;
-
   } catch (error) {
-      console.error("Exec failed", error.message);
       try {
-        const prompt = `User: "${userMessage}". (Context unavailable). Reply helpfully.`;
+        const prompt = `User: "${userMessage}". Reply helpfully.`;
         const responseText = await executeStatelessWithRetry(prompt);
         updateHistory(userId, userMessage, responseText);
         return responseText;
-      } catch (e) {
-         return "نواجه مشكلة تقنية بسيطة.. هل يمكنك المحاولة مجدداً؟";
-      }
+      } catch (e) { return "🔌 انقطاع في الاتصال بالشبكة العصبية.. حاول مجدداً."; }
   }
 }
 
 bot.use(session());
 
 bot.start(async (ctx) => {
-  // Only clear history if requested explicitly via a command, 
-  // but for /start we might want to keep it OR reset. 
-  // For "Long term memory", usually we DON'T reset on /start unless user asks to reset.
-  // But to be safe for a decision bot, let's reset to start a NEW decision, 
-  // BUT we could archive the old one (omitted for simplicity).
-  // Current behavior: Reset for a fresh start.
-  
   if (globalChatData[ctx.from.id]) {
-      // Archive or just clear
       globalChatData[ctx.from.id].history = [];
       globalChatData[ctx.from.id].lastSeen = Date.now();
+      globalChatData[ctx.from.id].topic = ""; 
   } else {
-      globalChatData[ctx.from.id] = { history: [], lastSeen: Date.now() };
+      globalChatData[ctx.from.id] = { history: [], lastSeen: Date.now(), topic: "" };
   }
   saveMemory();
   
   ctx.sendChatAction('typing');
-  const initial = await getGeminiResponse(ctx.from.id, "مرحبا، أريد البدء في اتخاذ قرار جديد.");
+  const initial = await getGeminiResponse(ctx.from.id, "مرحبا، عرف عن نفسك وابدأ التشغيل.");
   await safeReply(ctx, initial);
 });
 
@@ -248,26 +234,26 @@ bot.on('text', async (ctx) => {
   const response = await getGeminiResponse(ctx.from.id, ctx.message.text);
   await safeReply(ctx, response);
 
-  if (response.includes("نسبة النجاح") || response.includes("الحكم النهائي")) {
+  if (response.includes("الخاتمة") || response.includes("نسبة النجاح")) {
     setTimeout(() => {
-        ctx.reply("📉 **تقييم التجربة:**", 
+        ctx.reply("🎬 **ما هو تقييمك لهذا السيناريو؟**", 
             Markup.inlineKeyboard([
-                [Markup.button.callback('1', 'rate_1'), Markup.button.callback('5', 'rate_5')]
+                [Markup.button.callback('👎 ضعيف', 'rate_1'), Markup.button.callback('🌟 مذهل', 'rate_5')]
             ])
         );
-    }, 4000);
+    }, 3000);
   }
 });
 
 bot.action(/rate_(\d)/, async (ctx) => {
     const rating = ctx.match[1];
-    await ctx.editMessageText("شكراً لتقييمك! تم حفظه في السجل لتحسين دقة القرارات القادمة.");
+    await ctx.editMessageText("تم حفظ التقييم في الأرشيف 💾.");
     if (PRIVATE_CHANNEL_ID) {
-        bot.telegram.sendMessage(PRIVATE_CHANNEL_ID, `⭐ Rating: ${rating}/5 - User: @${ctx.from.username}`).catch(()=>{});
+        bot.telegram.sendMessage(PRIVATE_CHANNEL_ID, `⭐ Rating: ${rating}/5 - @${ctx.from.username}`).catch(()=>{});
     }
 });
 
-app.get('/', (req, res) => res.send(`NZT Memory Core v5.0 (Active)`));
+app.get('/', (req, res) => res.send(`NZT Cinematic v6.0 (Active)`));
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
     console.log('Running on port', PORT);
