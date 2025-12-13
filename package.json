@@ -1,6 +1,6 @@
 {
   "name": "nzt-decision-bot",
-  "version": "6.1.0",
+  "version": "6.2.0",
   "description": "NZT Bot Cinematic Edition",
   "main": "index.js",
   "scripts": {
