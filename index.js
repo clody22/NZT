@@ -10,13 +10,12 @@ const PRIVATE_CHANNEL_ID = process.env.PRIVATE_CHANNEL_ID;
 const MEMORY_FILE = 'nzt_memory_storage.json';
 
 // --- MULTI-KEY SETUP ---
-// Load keys into a mutable array so we can remove bad ones
 let API_KEYS = [
     process.env.API_KEY,
     process.env.API_KEY_2,
     process.env.API_KEY_3,
     process.env.API_KEY_4
-].filter(key => key && key.length > 10); // Basic validation
+].filter(key => key && key.length > 10);
 
 if (!BOT_TOKEN || API_KEYS.length === 0) {
   console.error("❌ CRITICAL: Missing TELEGRAM_BOT_TOKEN or API_KEYS");
@@ -28,10 +27,10 @@ console.log(`✅ Loaded ${API_KEYS.length} Gemini API Keys.`);
 const bot = new Telegraf(BOT_TOKEN);
 const app = express();
 
-// --- 1. PERSISTENT MEMORY ---
+// --- 1. ADVANCED PERSISTENT MEMORY ---
 let globalChatData = {};
 
-// Attempt to load memory on startup
+// Load memory safely
 if (fs.existsSync(MEMORY_FILE)) {
     try {
         globalChatData = JSON.parse(fs.readFileSync(MEMORY_FILE));
@@ -41,10 +40,15 @@ if (fs.existsSync(MEMORY_FILE)) {
     }
 }
 
+// Debounced Save to prevent file corruption
+let saveTimeout;
 function saveMemory() {
-    try {
-        fs.writeFileSync(MEMORY_FILE, JSON.stringify(globalChatData, null, 2));
-    } catch (e) { console.error("Save failed", e); }
+    clearTimeout(saveTimeout);
+    saveTimeout = setTimeout(() => {
+        try {
+            fs.writeFileSync(MEMORY_FILE, JSON.stringify(globalChatData, null, 2));
+        } catch (e) { console.error("Save failed", e); }
+    }, 1000); // Save 1 second after last change
 }
 
 const THEORIES_LIST = [
@@ -58,135 +62,131 @@ const THEORIES_LIST = [
 const NZT_INSTRUCTION = `
 You are NZT, an intelligent and empathetic Decision Assistant.
 **CORE OBJECTIVE:** Help the user make a life-changing decision using scientific and psychological theories.
+**RELATIONSHIP:** You are a long-term partner. You remember past dilemmas.
 **LANGUAGE:** Arabic (Informal but professional, warm, engaging).
 
-**THEORIES TO APPLY:**
-Use the following 20 theories to analyze the decision:
+**FORMATTING RULES:**
+- Use single asterisks for *bold*. No markdown errors.
+
+**THEORIES:**
 ${THEORIES_LIST}
 
-**STANDARD PROTOCOL:**
-1.  **THE HOOK (Start):** 
-    - Say: "أهلاً بك! 👋 أنا NZT، عقلك الثاني لاتخاذ القرارات الصعبة.
-    سأساعدك في تحليل خياراتك باستخدام 20 نظرية علمية لتختار الأفضل لك 🧠✨.
-    ببساطة.. ما هو القرار الذي يشغل بالك اليوم؟ 🤔"
-
-2.  **THE DATA GATHERING:**
-    - Ask **ONE** question at a time to gather: Options, Risks, Goals, Resources, Feelings.
-    - Be brief and interactive.
-
-3.  **THE REVEAL (Analysis):**
-    - Once you have enough info, analyze using the theories.
-    - Output Format:
-    **🎯 الحكم النهائي**
-    [نصيحة مباشرة وقوية]
-    
-    **📈 نسبة النجاح**
-    **[XX]%** 
-    
-    **🧠 زوايا التحليل (أهم 3 نظريات مؤثرة)**
-    *   **نظرية [اسم النظرية]:** [تأثيرها على القرار في سطر واحد]
-    *   **نظرية [اسم النظرية]:** [تأثيرها على القرار في سطر واحد]
-    *   **نظرية [اسم النظرية]:** [تأثيرها على القرار في سطر واحد]
-    
-    (يمكنك طلب التحليل الكامل لجميع النظريات الـ 20 إذا أردت)
+**PROTOCOL:**
+1.  **Start:** Ask about the decision if new, or follow up if returning.
+2.  **Gather:** Ask ONE question at a time.
+3.  **Analyze:** Use theories. Format output with:
+    *🎯 الحكم النهائي*
+    *📈 نسبة النجاح*
+    *🧠 زوايا التحليل* (Pick top 3 theories)
+4.  **Follow Up:** If the user returns later, ALWAYS ask: "How did your decision regarding [Topic] go? Did the theory help?"
 `;
 
-const activeChatSessions = new Map(); 
-
-// UTILITY
+// --- UTILITIES ---
 const sleep = (ms) => new Promise(resolve => setTimeout(resolve, ms));
 
-// --- KEY ROTATION LOGIC ---
-let currentKeyIndex = 0;
+async function safeReply(ctx, text) {
+    try {
+        const formatted = text.replace(/\*\*/g, '*');
+        await ctx.reply(formatted, { parse_mode: 'Markdown' });
+    } catch (error) {
+        console.warn("⚠️ Markdown failed. Falling back to plain text.");
+        try { await ctx.reply(text); } catch (e) {}
+    }
+}
 
+// --- GEMINI CLIENT ---
+let currentKeyIndex = 0;
 function getNextKey() {
     if (API_KEYS.length === 0) return null;
     currentKeyIndex = (currentKeyIndex + 1) % API_KEYS.length;
     return API_KEYS[currentKeyIndex];
 }
+function createAIClient(key) { return new GoogleGenAI({ apiKey: key }); }
 
-function createAIClient(key) {
-    return new GoogleGenAI({ apiKey: key });
-}
-
+// --- MAIN AI ENGINE ---
 async function getGeminiResponse(userId, userMessage) {
-  if (!globalChatData[userId]) globalChatData[userId] = { history: [] };
+  const now = Date.now();
+  
+  // Initialize User Memory Structure
+  if (!globalChatData[userId]) {
+      globalChatData[userId] = { 
+          history: [], 
+          lastSeen: now,
+          userName: "User"
+      };
+  }
+  
+  const userData = globalChatData[userId];
+  
+  // --- SMART MEMORY CHECK ---
+  // Check if user has been away for more than 24 hours
+  const hoursSinceLastSeen = (now - (userData.lastSeen || now)) / (1000 * 60 * 60);
+  let finalPrompt = userMessage;
+  
+  // If returning after a day (and has history), inject a system note to the model
+  if (hoursSinceLastSeen > 24 && userData.history.length > 2) {
+      console.log(`User ${userId} returned after ${hoursSinceLastSeen.toFixed(1)} hours. Injecting follow-up prompt.`);
+      finalPrompt = `[SYSTEM NOTE: The user has returned after ${Math.floor(hoursSinceLastSeen)} hours since the last conversation. 
+      Briefly welcome them back warmly and ask for an update on the results of their previous decision/dilemma. 
+      Then answer their new message: "${userMessage}"]`;
+  }
+
+  userData.lastSeen = now; // Update timestamp
 
   const updateHistory = (uId, uMsg, mMsg) => {
       const safeText = mMsg || "...";
+      // Don't save the [SYSTEM NOTE] part to history, only the user's actual text
       globalChatData[uId].history.push({ role: 'user', parts: [{ text: uMsg }] });
       globalChatData[uId].history.push({ role: 'model', parts: [{ text: safeText }] });
-      if (globalChatData[uId].history.length > 20) globalChatData[uId].history = globalChatData[uId].history.slice(-20);
+      
+      // Increased history limit for better long-term context
+      if (globalChatData[uId].history.length > 40) {
+          globalChatData[uId].history = globalChatData[uId].history.slice(-40);
+      }
       saveMemory();
   };
 
   const executeWithRetry = async (history, message, attempt = 0) => {
-      // Emergency exit
       if (API_KEYS.length === 0) throw new Error("NO_KEYS_AVAILABLE");
-      
-      // Stop recursion if we've tried too many times
       if (attempt >= API_KEYS.length * 3) throw new Error("ALL_KEYS_EXHAUSTED");
-
-      // COOLING PERIOD: If we cycled through all keys once, sleep 5s
-      if (attempt > 0 && attempt % API_KEYS.length === 0) {
-          console.log("🔄 All keys busy. Cooling down for 5s...");
-          await sleep(5000);
-      }
+      if (attempt > 0 && attempt % API_KEYS.length === 0) await sleep(5000);
 
       const activeKey = API_KEYS[currentKeyIndex];
       const ai = createAIClient(activeKey);
 
       try {
-          // Initialize Chat
           const chat = await ai.chats.create({
               model: 'gemini-2.5-flash',
-              config: { systemInstruction: NZT_INSTRUCTION, temperature: 0.7 },
+              config: { systemInstruction: NZT_INSTRUCTION },
               history: history || []
           });
 
+          // Send the manipulated prompt (with system note if applicable)
           const result = await chat.sendMessage({ message: message });
           return result.text;
 
       } catch (error) {
-          // 1. Check for INVALID KEY (400)
           const isInvalid = error.status === 400 || (error.message && (error.message.includes('API_KEY_INVALID') || error.message.includes('expired')));
-          
           if (isInvalid) {
-              console.error(`❌ Key index ${currentKeyIndex} is DEAD. Removing.`);
-              API_KEYS.splice(currentKeyIndex, 1); // Remove bad key
-              
+              API_KEYS.splice(currentKeyIndex, 1);
               if (API_KEYS.length === 0) throw new Error("NO_KEYS_AVAILABLE");
-              
-              // Adjust index
               currentKeyIndex = currentKeyIndex % API_KEYS.length;
               return executeWithRetry(history, message, attempt);
           }
-
-          // 2. Check for RATE LIMIT (429)
-          const isRateLimit = error.status === 429 || (error.message && error.message.includes('429'));
-          
-          if (isRateLimit) {
-              console.warn(`⚠️ Key ${currentKeyIndex} Hit 429. Rotating...`);
+          if (error.status === 429 || (error.message && error.message.includes('429'))) {
               getNextKey();
-              await sleep(1000); // Short pause to prevent spinning
+              await sleep(1000);
               return executeWithRetry(history, message, attempt + 1);
           }
-          
-          throw error; // Other errors bubble up
+          throw error;
       }
   };
 
+  // Fallback for context loss
   const executeStatelessWithRetry = async (prompt, attempt = 0) => {
-      if (API_KEYS.length === 0) throw new Error("NO_KEYS_AVAILABLE");
-      if (attempt >= API_KEYS.length * 3) throw new Error("ALL_KEYS_EXHAUSTED");
-
-      if (attempt > 0 && attempt % API_KEYS.length === 0) {
-          await sleep(5000);
-      }
-
+      if (API_KEYS.length === 0) throw new Error("NO_KEYS");
       const activeKey = API_KEYS[currentKeyIndex];
       const ai = createAIClient(activeKey);
-
       try {
           const result = await ai.models.generateContent({
               model: 'gemini-2.5-flash',
@@ -194,42 +194,28 @@ async function getGeminiResponse(userId, userMessage) {
               contents: prompt
           });
           return result.text;
-      } catch (error) {
-          // Simplified error handling for stateless
-          if (error.status === 429 || (error.message && error.message.includes('429'))) {
-              getNextKey();
-              await sleep(1000);
-              return executeStatelessWithRetry(prompt, attempt + 1);
-          }
-          throw error;
+      } catch(e) { 
+          getNextKey();
+          if(attempt < 3) return executeStatelessWithRetry(prompt, attempt+1);
+          throw e;
       }
   };
 
   try {
-    const responseText = await executeWithRetry(globalChatData[userId].history, userMessage);
+    const responseText = await executeWithRetry(userData.history, finalPrompt);
+    // Important: We pass 'userMessage' (original) to history, not 'finalPrompt' (injected)
     updateHistory(userId, userMessage, responseText);
     return responseText;
 
   } catch (error) {
-      if (error.message === "ALL_KEYS_EXHAUSTED" || error.message === "NO_KEYS_AVAILABLE") {
-          return "🚦 النظام مزدحم جداً حالياً. يرجى الانتظار دقيقة قبل المحاولة مرة أخرى.";
-      }
-
-      console.error("⚠️ Levels 1/2 Failed. Level 3 (Fallback)...", error.message);
-
+      console.error("Exec failed", error.message);
       try {
-        // FIX: DO NOT WIPE HISTORY HERE. 
-        // We try to get a response based on the current message to keep the flow going.
-        const prompt = `User message: "${userMessage}". Previous context might be temporarily unavailable. Answer helpfully.`;
+        const prompt = `User: "${userMessage}". (Context unavailable). Reply helpfully.`;
         const responseText = await executeStatelessWithRetry(prompt);
-        
-        // Append this interaction to the EXISTING history instead of overwriting it
         updateHistory(userId, userMessage, responseText);
         return responseText;
-
-      } catch (errorL3) {
-         console.error("❌ Level 3 Failed:", errorL3.message);
-         return "أواجه صعوبة في الاتصال حالياً 🔌.. هل يمكنك إعادة إرسال رسالتك الأخيرة؟";
+      } catch (e) {
+         return "نواجه مشكلة تقنية بسيطة.. هل يمكنك المحاولة مجدداً؟";
       }
   }
 }
@@ -237,42 +223,51 @@ async function getGeminiResponse(userId, userMessage) {
 bot.use(session());
 
 bot.start(async (ctx) => {
-  // Only clear history on explicit /start command
-  activeChatSessions.delete(ctx.from.id);
-  globalChatData[ctx.from.id] = { history: [] }; 
+  // Only clear history if requested explicitly via a command, 
+  // but for /start we might want to keep it OR reset. 
+  // For "Long term memory", usually we DON'T reset on /start unless user asks to reset.
+  // But to be safe for a decision bot, let's reset to start a NEW decision, 
+  // BUT we could archive the old one (omitted for simplicity).
+  // Current behavior: Reset for a fresh start.
+  
+  if (globalChatData[ctx.from.id]) {
+      // Archive or just clear
+      globalChatData[ctx.from.id].history = [];
+      globalChatData[ctx.from.id].lastSeen = Date.now();
+  } else {
+      globalChatData[ctx.from.id] = { history: [], lastSeen: Date.now() };
+  }
   saveMemory();
   
   ctx.sendChatAction('typing');
-  const initial = await getGeminiResponse(ctx.from.id, "Start");
-  ctx.reply(initial, { parse_mode: 'Markdown' });
+  const initial = await getGeminiResponse(ctx.from.id, "مرحبا، أريد البدء في اتخاذ قرار جديد.");
+  await safeReply(ctx, initial);
 });
 
 bot.on('text', async (ctx) => {
   const response = await getGeminiResponse(ctx.from.id, ctx.message.text);
-  await ctx.reply(response, { parse_mode: 'Markdown' });
+  await safeReply(ctx, response);
 
   if (response.includes("نسبة النجاح") || response.includes("الحكم النهائي")) {
     setTimeout(() => {
-        ctx.reply("📉 **هل كان هذا التحليل مفيداً؟**\n\nساعدني لأصبح أذكى في المرة القادمة 👇", 
+        ctx.reply("📉 **تقييم التجربة:**", 
             Markup.inlineKeyboard([
-                [Markup.button.callback('😕 غير دقيق', 'rate_1'), Markup.button.callback('🔥 ممتاز', 'rate_5')]
+                [Markup.button.callback('1', 'rate_1'), Markup.button.callback('5', 'rate_5')]
             ])
         );
-    }, 3000);
+    }, 4000);
   }
 });
 
 bot.action(/rate_(\d)/, async (ctx) => {
     const rating = ctx.match[1];
-    const username = ctx.from.username || "Unknown";
-    await ctx.editMessageText(rating === '5' ? "شكراً لك! أتمنى لك التوفيق في قرارك ✨" : "شكراً لملاحظتك، سأتحسن في المرة القادمة 🙏");
+    await ctx.editMessageText("شكراً لتقييمك! تم حفظه في السجل لتحسين دقة القرارات القادمة.");
     if (PRIVATE_CHANNEL_ID) {
-        const msg = `🌟 **New Rating**\n👤 User: @${username}\n⭐ Score: ${rating}/5`;
-        bot.telegram.sendMessage(PRIVATE_CHANNEL_ID, msg).catch(e=>{});
+        bot.telegram.sendMessage(PRIVATE_CHANNEL_ID, `⭐ Rating: ${rating}/5 - User: @${ctx.from.username}`).catch(()=>{});
     }
 });
 
-app.get('/', (req, res) => res.send(`NZT Core v4.2 (Alive Keys: ${API_KEYS.length})`));
+app.get('/', (req, res) => res.send(`NZT Memory Core v5.0 (Active)`));
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
     console.log('Running on port', PORT);
