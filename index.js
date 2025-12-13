@@ -10,20 +10,20 @@ const PRIVATE_CHANNEL_ID = process.env.PRIVATE_CHANNEL_ID;
 const MEMORY_FILE = 'nzt_memory_storage.json';
 
 // --- MULTI-KEY SETUP ---
-// Load all available keys from environment
-const API_KEYS = [
+// Load keys into a mutable array so we can remove bad ones
+let API_KEYS = [
     process.env.API_KEY,
     process.env.API_KEY_2,
     process.env.API_KEY_3,
     process.env.API_KEY_4
-].filter(key => key && key.length > 5); // Filter out undefined or empty
+].filter(key => key && key.length > 10); // Basic validation
 
 if (!BOT_TOKEN || API_KEYS.length === 0) {
   console.error("❌ CRITICAL: Missing TELEGRAM_BOT_TOKEN or API_KEYS");
   process.exit(1);
 }
 
-console.log(`✅ Loaded ${API_KEYS.length} Gemini API Keys for rotation.`);
+console.log(`✅ Loaded ${API_KEYS.length} Gemini API Keys.`);
 
 const bot = new Telegraf(BOT_TOKEN);
 const app = express();
@@ -34,7 +34,6 @@ let globalChatData = {};
 if (fs.existsSync(MEMORY_FILE)) {
     try {
         globalChatData = JSON.parse(fs.readFileSync(MEMORY_FILE));
-        console.log("🧠 Memory Loaded.");
     } catch (e) {
         globalChatData = {};
     }
@@ -80,18 +79,18 @@ If you see [CONTEXT LOST], it means the conversation history was wiped due to a 
 
 const activeChatSessions = new Map(); 
 
-// UTILITY: Wait function
+// UTILITY
 const sleep = (ms) => new Promise(resolve => setTimeout(resolve, ms));
 
 // --- KEY ROTATION LOGIC ---
-let currentKeyIndex = Math.floor(Math.random() * API_KEYS.length); // Start random
+let currentKeyIndex = 0;
 
 function getNextKey() {
+    if (API_KEYS.length === 0) return null;
     currentKeyIndex = (currentKeyIndex + 1) % API_KEYS.length;
     return API_KEYS[currentKeyIndex];
 }
 
-// Helper to create AI client with specific key
 function createAIClient(key) {
     return new GoogleGenAI({ apiKey: key });
 }
@@ -107,18 +106,24 @@ async function getGeminiResponse(userId, userMessage) {
       saveMemory();
   };
 
-  // Helper: Try to generate content with Key Rotation
   const executeWithRetry = async (history, message, attempt = 0) => {
-      // Max attempts = number of keys * 2 (try each key twice roughly)
-      if (attempt >= API_KEYS.length * 2) {
-          throw new Error("ALL_KEYS_EXHAUSTED");
+      // Emergency exit
+      if (API_KEYS.length === 0) throw new Error("NO_KEYS_AVAILABLE");
+      
+      // Stop recursion if we've tried too many times
+      if (attempt >= API_KEYS.length * 3) throw new Error("ALL_KEYS_EXHAUSTED");
+
+      // COOLING PERIOD: If we cycled through all keys once, sleep 5s
+      if (attempt > 0 && attempt % API_KEYS.length === 0) {
+          console.log("🔄 All keys busy. Cooling down for 5s...");
+          await sleep(5000);
       }
 
-      const activeKey = API_KEYS[currentKeyIndex]; // Use current key
+      const activeKey = API_KEYS[currentKeyIndex];
       const ai = createAIClient(activeKey);
 
       try {
-          // Re-create chat with the selected key
+          // Initialize Chat
           const chat = await ai.chats.create({
               model: 'gemini-2.5-flash',
               config: { systemInstruction: NZT_INSTRUCTION, temperature: 0.7 },
@@ -129,22 +134,42 @@ async function getGeminiResponse(userId, userMessage) {
           return result.text;
 
       } catch (error) {
+          // 1. Check for INVALID KEY (400)
+          const isInvalid = error.status === 400 || (error.message && (error.message.includes('API_KEY_INVALID') || error.message.includes('expired')));
+          
+          if (isInvalid) {
+              console.error(`❌ Key index ${currentKeyIndex} is DEAD. Removing.`);
+              API_KEYS.splice(currentKeyIndex, 1); // Remove bad key
+              
+              if (API_KEYS.length === 0) throw new Error("NO_KEYS_AVAILABLE");
+              
+              // Adjust index
+              currentKeyIndex = currentKeyIndex % API_KEYS.length;
+              // Retry immediately without incrementing attempt count (since we didn't really try)
+              return executeWithRetry(history, message, attempt);
+          }
+
+          // 2. Check for RATE LIMIT (429)
           const isRateLimit = error.status === 429 || (error.message && error.message.includes('429'));
           
           if (isRateLimit) {
-              console.warn(`⚠️ Key ${currentKeyIndex + 1} Limit Hit (429). Rotating...`);
-              getNextKey(); // Switch to next key immediately
-              // Retry immediately with new key
+              console.warn(`⚠️ Key ${currentKeyIndex} Hit 429. Rotating...`);
+              getNextKey();
+              await sleep(1000); // Short pause to prevent spinning
               return executeWithRetry(history, message, attempt + 1);
           }
           
-          throw error; // Other errors (500, etc) bubble up
+          throw error; // Other errors bubble up
       }
   };
 
-  // Helper: Stateless fallback with Key Rotation
   const executeStatelessWithRetry = async (prompt, attempt = 0) => {
-      if (attempt >= API_KEYS.length * 2) throw new Error("ALL_KEYS_EXHAUSTED");
+      if (API_KEYS.length === 0) throw new Error("NO_KEYS_AVAILABLE");
+      if (attempt >= API_KEYS.length * 3) throw new Error("ALL_KEYS_EXHAUSTED");
+
+      if (attempt > 0 && attempt % API_KEYS.length === 0) {
+          await sleep(5000);
+      }
 
       const activeKey = API_KEYS[currentKeyIndex];
       const ai = createAIClient(activeKey);
@@ -157,9 +182,18 @@ async function getGeminiResponse(userId, userMessage) {
           });
           return result.text;
       } catch (error) {
+          const isInvalid = error.status === 400 || (error.message && error.message.includes('expired'));
+          if (isInvalid) {
+               console.error(`❌ Key index ${currentKeyIndex} is DEAD. Removing.`);
+               API_KEYS.splice(currentKeyIndex, 1);
+               if (API_KEYS.length === 0) throw new Error("NO_KEYS_AVAILABLE");
+               currentKeyIndex = currentKeyIndex % API_KEYS.length;
+               return executeStatelessWithRetry(prompt, attempt);
+          }
+
           if (error.status === 429 || (error.message && error.message.includes('429'))) {
-              console.warn(`⚠️ Key ${currentKeyIndex + 1} Limit Hit (Stateless). Rotating...`);
               getNextKey();
+              await sleep(1000);
               return executeStatelessWithRetry(prompt, attempt + 1);
           }
           throw error;
@@ -167,19 +201,17 @@ async function getGeminiResponse(userId, userMessage) {
   };
 
   try {
-    // LEVEL 1 & 2 combined in executeWithRetry
     const responseText = await executeWithRetry(globalChatData[userId].history, userMessage);
     updateHistory(userId, userMessage, responseText);
     return responseText;
 
   } catch (error) {
-      if (error.message === "ALL_KEYS_EXHAUSTED") {
-          return "🚦 النظام مزدحم جداً على جميع السيرفرات. يرجى الانتظار دقيقة.";
+      if (error.message === "ALL_KEYS_EXHAUSTED" || error.message === "NO_KEYS_AVAILABLE") {
+          return "🚦 النظام مزدحم جداً حالياً. يرجى الانتظار دقيقة قبل المحاولة مرة أخرى.";
       }
 
-      console.error("⚠️ Levels 1/2 Failed. Attempting Level 3 (Stateless)...", error.message);
+      console.error("⚠️ Levels 1/2 Failed. Level 3 (Stateless)...", error.message);
 
-      // LEVEL 3: STATELESS FALLBACK
       try {
         globalChatData[userId].history = []; 
         saveMemory();
@@ -191,7 +223,7 @@ async function getGeminiResponse(userId, userMessage) {
         return responseText;
 
       } catch (errorL3) {
-         console.error("❌ Level 3 Failed:", errorL3);
+         console.error("❌ Level 3 Failed:", errorL3.message);
          return "همم.. يبدو أنني استغرقت في التفكير وفقدت حبل أفكاري 😅\nهل يمكنك تذكيري بآخر نقطة؟";
       }
   }
@@ -234,7 +266,7 @@ bot.action(/rate_(\d)/, async (ctx) => {
     }
 });
 
-app.get('/', (req, res) => res.send(`NZT Core v4.0 (Multi-Key: ${API_KEYS.length} keys)`));
+app.get('/', (req, res) => res.send(`NZT Core v4.1 (Alive Keys: ${API_KEYS.length})`));
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
     console.log('Running on port', PORT);
@@ -244,7 +276,6 @@ app.listen(PORT, () => {
     }, 14 * 60 * 1000); 
 });
 
-// Enable Graceful Shutdown
 bot.launch({ dropPendingUpdates: true });
 process.once('SIGINT', () => bot.stop('SIGINT'));
 process.once('SIGTERM', () => bot.stop('SIGTERM'));
