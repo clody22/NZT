@@ -6,7 +6,6 @@ const http = require('http');
 require('dotenv').config();
 
 const BOT_TOKEN = process.env.TELEGRAM_BOT_TOKEN;
-const PRIVATE_CHANNEL_ID = process.env.PRIVATE_CHANNEL_ID;
 const MEMORY_FILE = 'nzt_memory_storage.json';
 
 // --- MULTI-KEY SETUP ---
@@ -22,7 +21,7 @@ if (!BOT_TOKEN || API_KEYS.length === 0) {
   process.exit(1);
 }
 
-console.log(`✅ Loaded ${API_KEYS.length} Gemini API Keys.`);
+console.log(`✅ Loaded ${API_KEYS.length} Gemini API Keys. Using Model: gemini-3-pro-preview`);
 
 const bot = new Telegraf(BOT_TOKEN);
 const app = express();
@@ -49,51 +48,53 @@ function saveMemory() {
 }
 
 const NZT_INSTRUCTION = `
-You are NZT, the Cinematic Decision Architect (v6.2). 🎬🧠
-**IDENTITY:** A dramatic, highly intelligent AI.
-**OBJECTIVE:** Analyze decisions using exactly 20 scientific theories.
-**LANGUAGE:** Arabic.
+**Persona / Role:**
+أنت **NZTDecisionBot**، كيان ذكاء فائق ومتخصص في تحليل القرارات المصيرية.
+تتصرف **كمجلس من الخبراء**، كل نظرية علمية (من أصل 20) هي "عضو مستقل" يصوت على القرار الأمثل (خيار A أو خيار B).
 
-**THE 20 THEORIES DATABASE (MANDATORY TO USE ALL):**
-1. 🌌 **Physical/Cosmic:** Systems, Complexity, Chaos, Thermodynamics, Relativity, Quantum, Time, Equilibrium, Constraints.
-2. 🧠 **Psychological:** Loss Aversion, Motivation, Perception, Personality, Behavioral Economics.
-3. ♟️ **Logical:** Game Theory, Probability, Decision Theory, Bayesian, Rational Choice, Optimization.
+**OBJECTIVES:**
+1. جمع معلومات دقيقة (5 نقاط أساسية).
+2. تحليل القرار على **3 مراحل منفصلة** (مجموعات النظريات).
+3. **التصويت:** كل نظرية يجب أن تختار (مع/ضد) أو (خيار 1/خيار 2).
+4. **النتيجة النهائية:** جمع الأصوات وإعلان الفائز.
 
-**PROTOCOL (STRICT FLOW):**
+**WORKFLOW (STRICTLY FOLLOW THIS ORDER):**
 
-**SCENE 1: THE OPENING**
-- If User says "Hi/Start": Introduce yourself dramatically as "NZT". Ask for the dilemma.
+**PHASE 1: GATHERING (Start Here)**
+- Ask these 5 questions clearly:
+  1️⃣ الموارد المالية: (كم يكفي رصيدك؟)
+  2️⃣ الشغف: (فكرة عابرة أم حلم؟)
+  3️⃣ الوظيفة الحالية: (أمان أم ملل؟)
+  4️⃣ الأهداف: (أسوأ سيناريو vs النجاح المثالي)
+  5️⃣ الوقت: (هل هناك ضغوط زمنية؟)
+- **STOP.** Wait for user answer.
 
-**SCENE 2: THE INVESTIGATION**
-- Ask sharp questions to get: 1. Financial/Resource Status. 2. Emotional State/Passion.
-- **CRITICAL RULE:** If the User has ALREADY provided their resource status (e.g., "I have 4 months savings") AND their feelings (e.g., "Routine kills me"), **DO NOT ASK MORE QUESTIONS.**
-- **IMMEDIATELY JUMP TO SCENE 3.**
+**PHASE 2: THE GROUPS (Interactive)**
+- **Step A (Physical/Cosmic):**
+  - List theories: Thermodynamics, Chaos, Complexity, Relativity, Quantum, Time, Equilibrium, Constraints.
+  - For EACH theory: State which Option it supports and WHY.
+  - **STOP.** Ask: "هل ننتقل للمجموعة النفسية؟"
+  
+- **Step B (Psychological/Behavioral) (Only after user agrees):**
+  - List theories: Personality, Motivation, Perception, Behavioral Economics, Loss Aversion.
+  - For EACH theory: Vote for an Option.
+  - **STOP.** Ask: "هل ننتقل للمجموعة المنطقية؟"
 
-**SCENE 3: THE CLIMAX (THE ANALYSIS)**
-- **TRIGGER:** User provided enough context.
-- **OUTPUT FORMAT (Must be exactly this):**
+- **Step C (Logical/Strategic) (Only after user agrees):**
+  - List theories: Game Theory, Probability, Decision, Bayesian, Rational Choice, Optimization.
+  - For EACH theory: Vote for an Option.
+  - **STOP.** Ask: "هل ترغب في رؤية النتيجة النهائية وتجميع الأصوات؟"
 
-    🎬 **مشهد التحليل.. كشف الأوراق** 🎞️
+**PHASE 3: THE VERDICT**
+- **Vote Count:** Show how many theories voted for Option A vs Option B.
+- **Final Decision:** The winner based on expert consensus.
+- **Success Probability:** XX%.
+- **Action Plan:** Bullet points.
 
-    🌌 **أولاً: منظور الفيزياء والكون (Physical)**
-    (List Group 1 theories with emojis)
-    • **نظرية [Name]:** [Insight]
-    ...
-
-    🧠 **ثانياً: التحليل النفسي (Psychological)**
-    (List Group 2 theories with emojis)
-    • **نظرية [Name]:** [Insight]
-    ...
-
-    ♟️ **ثالثاً: المنطق والاستراتيجية (Logical)**
-    (List Group 3 theories with emojis)
-    • **نظرية [Name]:** [Insight]
-    ...
-
-    🎥 **المشهد الختامي (The Verdict)**
-    [Clear, decisive advice based on the theories]
-
-    🔮 **نسبة نجاح السيناريو:** [XX]%
+**CRITICAL RULES:**
+- **DO NOT** output the whole analysis at once. You MUST pause after each Group and ask to proceed.
+- Use Emojis (🔥, 🌪️, 🧠, ⚖️).
+- Be objective yet cinematic.
 `;
 
 // --- UTILITIES ---
@@ -127,38 +128,23 @@ async function getGeminiResponse(userId, userMessage) {
   
   const userData = globalChatData[userId];
   
-  if (userData.history.length < 4 && userMessage.length > 10) {
-      userData.topic = userMessage.substring(0, 50) + "...";
-  }
-
-  const hoursSinceLastSeen = (now - (userData.lastSeen || now)) / (1000 * 60 * 60);
-  let finalPrompt = userMessage;
-  
-  if (hoursSinceLastSeen > 24 && userData.history.length > 2) {
-      finalPrompt = `[SYSTEM NOTE: User returned after ${Math.floor(hoursSinceLastSeen)} hours. Last topic: "${userData.topic}". 
-      Welcome them back dramatically. Then answer: "${userMessage}"]`;
-  }
-
-  userData.lastSeen = now;
+  // Basic context window management
+  if (userData.history.length > 50) userData.history = userData.history.slice(-50);
 
   const updateHistory = (uId, uMsg, mMsg) => {
       globalChatData[uId].history.push({ role: 'user', parts: [{ text: uMsg }] });
       globalChatData[uId].history.push({ role: 'model', parts: [{ text: mMsg || "..." }] });
-      if (globalChatData[uId].history.length > 40) globalChatData[uId].history = globalChatData[uId].history.slice(-40);
       saveMemory();
   };
 
   const executeWithRetry = async (history, message, attempt = 0) => {
       if (API_KEYS.length === 0) throw new Error("NO_KEYS");
-      if (attempt >= API_KEYS.length * 3) throw new Error("EXHAUSTED");
-      if (attempt > 0 && attempt % API_KEYS.length === 0) await sleep(5000);
-
       const activeKey = API_KEYS[currentKeyIndex];
       const ai = createAIClient(activeKey);
 
       try {
           const chat = await ai.chats.create({
-              model: 'gemini-2.5-flash',
+              model: 'gemini-3-pro-preview', // UPGRADED MODEL
               config: { systemInstruction: NZT_INSTRUCTION },
               history: history || []
           });
@@ -167,97 +153,47 @@ async function getGeminiResponse(userId, userMessage) {
           return result.text;
 
       } catch (error) {
-          const isInvalid = error.status === 400 || (error.message && (error.message.includes('API_KEY_INVALID') || error.message.includes('expired')));
-          if (isInvalid) {
-              API_KEYS.splice(currentKeyIndex, 1);
-              if (API_KEYS.length === 0) throw new Error("NO_KEYS");
-              currentKeyIndex = currentKeyIndex % API_KEYS.length;
-              return executeWithRetry(history, message, attempt);
-          }
-          if (error.status === 429) {
+          if (attempt < 3) {
               getNextKey();
               await sleep(1000);
               return executeWithRetry(history, message, attempt + 1);
           }
-          throw error;
-      }
-  };
-
-  const executeStatelessWithRetry = async (prompt, attempt = 0) => {
-      if (API_KEYS.length === 0) throw new Error("NO_KEYS");
-      const activeKey = API_KEYS[currentKeyIndex];
-      const ai = createAIClient(activeKey);
-      try {
-          const result = await ai.models.generateContent({
-              model: 'gemini-2.5-flash',
-              config: { systemInstruction: NZT_INSTRUCTION },
-              contents: prompt
-          });
-          return result.text;
-      } catch(e) { 
-          getNextKey();
-          if(attempt < 3) return executeStatelessWithRetry(prompt, attempt+1);
-          throw e;
+          return "⚠️ حدث خطأ في الاتصال بالمجلس. الرجاء إعادة صياغة إجابتك.";
       }
   };
 
   try {
-    const responseText = await executeWithRetry(userData.history, finalPrompt);
+    const responseText = await executeWithRetry(userData.history, userMessage);
     updateHistory(userId, userMessage, responseText);
     return responseText;
   } catch (error) {
-      try {
-        const prompt = `User: "${userMessage}". Reply helpfully.`;
-        const responseText = await executeStatelessWithRetry(prompt);
-        updateHistory(userId, userMessage, responseText);
-        return responseText;
-      } catch (e) { return "🔌 انقطاع في الاتصال بالشبكة العصبية.. حاول مجدداً."; }
+      return "⚠️ خطأ غير متوقع.";
   }
 }
 
 bot.use(session());
 
 bot.start(async (ctx) => {
+  // Reset history on start
   if (globalChatData[ctx.from.id]) {
       globalChatData[ctx.from.id].history = [];
-      globalChatData[ctx.from.id].lastSeen = Date.now();
-      globalChatData[ctx.from.id].topic = ""; 
   } else {
-      globalChatData[ctx.from.id] = { history: [], lastSeen: Date.now(), topic: "" };
+      globalChatData[ctx.from.id] = { history: [], lastSeen: Date.now() };
   }
   saveMemory();
   
   ctx.sendChatAction('typing');
-  const initial = await getGeminiResponse(ctx.from.id, "مرحبا، عرف عن نفسك وابدأ التشغيل.");
+  const initial = await getGeminiResponse(ctx.from.id, "ابدا معي المرحلة الاولى: جمع المعلومات الاساسية (Phase 1). عرف عن نفسك باختصار شديد واسالني الاسئلة الخمسة.");
   await safeReply(ctx, initial);
 });
 
 bot.on('text', async (ctx) => {
-  ctx.sendChatAction('typing'); // Show typing indicator immediately
+  ctx.sendChatAction('typing');
   const response = await getGeminiResponse(ctx.from.id, ctx.message.text);
   await safeReply(ctx, response);
-
-  // Check for the verdict keywords to trigger rating
-  if (response.includes("المشهد الختامي") || response.includes("نسبة نجاح")) {
-    setTimeout(() => {
-        ctx.reply("🎬 **ما هو تقييمك لهذا السيناريو؟**", 
-            Markup.inlineKeyboard([
-                [Markup.button.callback('👎 ضعيف', 'rate_1'), Markup.button.callback('🌟 مذهل', 'rate_5')]
-            ])
-        );
-    }, 4000); // Increased delay slightly
-  }
 });
 
-bot.action(/rate_(\d)/, async (ctx) => {
-    const rating = ctx.match[1];
-    await ctx.editMessageText("تم حفظ التقييم في الأرشيف 💾.");
-    if (PRIVATE_CHANNEL_ID) {
-        bot.telegram.sendMessage(PRIVATE_CHANNEL_ID, `⭐ Rating: ${rating}/5 - @${ctx.from.username}`).catch(()=>{});
-    }
-});
-
-app.get('/', (req, res) => res.send(`NZT Cinematic v6.2 (Active)`));
+app.get('/', (req, res) => res.send(`NZT Expert Council v7.1 Pro (Active)`));
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
     console.log('Running on port', PORT);
