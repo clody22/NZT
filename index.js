@@ -21,7 +21,7 @@ if (!BOT_TOKEN || API_KEYS.length === 0) {
   process.exit(1);
 }
 
-console.log(`✅ Loaded ${API_KEYS.length} Gemini API Keys. Primary: gemini-3-pro-preview | Fallback: gemini-2.5-flash`);
+console.log(`✅ Loaded ${API_KEYS.length} Gemini API Keys. Model: gemini-2.5-flash (Thinking Enabled)`);
 
 const bot = new Telegraf(BOT_TOKEN);
 const app = express();
@@ -111,6 +111,7 @@ async function safeReply(ctx, text) {
 
 // --- GEMINI CLIENT ---
 let currentKeyIndex = 0;
+
 function getNextKey() {
     if (API_KEYS.length === 0) return null;
     currentKeyIndex = (currentKeyIndex + 1) % API_KEYS.length;
@@ -137,29 +138,29 @@ async function getGeminiResponse(userId, userMessage) {
       saveMemory();
   };
 
-  // SMART FALLBACK LOGIC
-  const executeWithRetry = async (history, message, attempt = 0, useFallback = false) => {
+  const executeWithRetry = async (history, message, attempt = 0) => {
       if (API_KEYS.length === 0) throw new Error("NO_KEYS");
 
       // Stop after extensive retries
       if (attempt >= API_KEYS.length * 2) {
-          if (!useFallback) {
-              console.log("⚠️ All keys failed on Pro. Switching to Flash...");
-              return executeWithRetry(history, message, 0, true);
-          }
-          return "⚠️ الشبكة مشغولة جداً حالياً. حاول بعد دقيقة.";
+          return "⚠️ الشبكة مشغولة جداً. يرجى المحاولة لاحقاً.";
       }
 
       const activeKey = API_KEYS[currentKeyIndex];
       const ai = createAIClient(activeKey);
       
-      // Try Pro first, unless fallback is active
-      const modelName = useFallback ? 'gemini-2.5-flash' : 'gemini-3-pro-preview';
+      // OPTIMIZED STRATEGY: Use gemini-2.5-flash but with thinkingConfig
+      // This gives "Smart" results with "Flash" quotas.
+      const modelName = 'gemini-2.5-flash';
 
       try {
           const chat = await ai.chats.create({
               model: modelName,
-              config: { systemInstruction: NZT_INSTRUCTION },
+              config: { 
+                  systemInstruction: NZT_INSTRUCTION,
+                  // Thinking Config: Makes Flash smarter!
+                  thinkingConfig: { thinkingBudget: 4096 } 
+              },
               history: history || []
           });
 
@@ -167,17 +168,12 @@ async function getGeminiResponse(userId, userMessage) {
           return result.text;
 
       } catch (error) {
-          console.error(`Error on ${modelName} (Key ${currentKeyIndex}): ${error.message}`);
+          console.log(`⚠️ Error on ${modelName} (Key index ${currentKeyIndex}): ${error.message}`);
           
-          // Immediate fallback if model is not found or unsupported
-          if (!useFallback && (error.status === 404 || error.message.includes('not found') || error.message.includes('unsupported'))) {
-              return executeWithRetry(history, message, 0, true);
-          }
-
           // Rotate key and retry
           getNextKey();
           await sleep(1000);
-          return executeWithRetry(history, message, attempt + 1, useFallback);
+          return executeWithRetry(history, message, attempt + 1);
       }
   };
 
@@ -186,7 +182,7 @@ async function getGeminiResponse(userId, userMessage) {
     updateHistory(userId, userMessage, responseText);
     return responseText;
   } catch (error) {
-      return "⚠️ خطأ غير متوقع.";
+      return "⚠️ حدث خطأ غير متوقع.";
   }
 }
 
@@ -212,7 +208,7 @@ bot.on('text', async (ctx) => {
   await safeReply(ctx, response);
 });
 
-app.get('/', (req, res) => res.send(`NZT Expert Council v7.2 (Stable + Fallback Active)`));
+app.get('/', (req, res) => res.send(`NZT Expert Council v8.0 (Flash Thinking Edition)`));
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
     console.log('Running on port', PORT);
@@ -222,6 +218,14 @@ app.listen(PORT, () => {
     }, 14 * 60 * 1000); 
 });
 
-bot.launch({ dropPendingUpdates: true });
+// ROBUST LAUNCH
+bot.launch({ dropPendingUpdates: true }).catch(err => {
+    if (err.description && err.description.includes('conflict')) {
+        console.error("⚠️ BOT CONFLICT: Another instance is running. This is common during re-deploys. The new instance will keep retrying or fail.");
+    } else {
+        console.error("❌ Bot launch failed:", err);
+    }
+});
+
 process.once('SIGINT', () => bot.stop('SIGINT'));
 process.once('SIGTERM', () => bot.stop('SIGTERM'));
