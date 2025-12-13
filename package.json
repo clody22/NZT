@@ -1,6 +1,6 @@
 {
   "name": "nzt-decision-bot",
-  "version": "2.4.0",
+  "version": "2.5.0",
   "description": "NZT Advanced Telegram Bot",
   "main": "index.js",
   "scripts": {
