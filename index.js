@@ -6,17 +6,26 @@ const http = require('http');
 require('dotenv').config();
 
 const BOT_TOKEN = process.env.TELEGRAM_BOT_TOKEN;
-const API_KEY = process.env.API_KEY;
 const PRIVATE_CHANNEL_ID = process.env.PRIVATE_CHANNEL_ID;
 const MEMORY_FILE = 'nzt_memory_storage.json';
 
-if (!BOT_TOKEN || !API_KEY) {
-  console.error("Missing Environment Variables");
+// --- MULTI-KEY SETUP ---
+// Load all available keys from environment
+const API_KEYS = [
+    process.env.API_KEY,
+    process.env.API_KEY_2,
+    process.env.API_KEY_3,
+    process.env.API_KEY_4
+].filter(key => key && key.length > 5); // Filter out undefined or empty
+
+if (!BOT_TOKEN || API_KEYS.length === 0) {
+  console.error("❌ CRITICAL: Missing TELEGRAM_BOT_TOKEN or API_KEYS");
   process.exit(1);
 }
 
+console.log(`✅ Loaded ${API_KEYS.length} Gemini API Keys for rotation.`);
+
 const bot = new Telegraf(BOT_TOKEN);
-const ai = new GoogleGenAI({ apiKey: API_KEY });
 const app = express();
 
 // --- 1. PERSISTENT MEMORY ---
@@ -71,8 +80,21 @@ If you see [CONTEXT LOST], it means the conversation history was wiped due to a 
 
 const activeChatSessions = new Map(); 
 
-// UTILITY: Wait function for Rate Limits
+// UTILITY: Wait function
 const sleep = (ms) => new Promise(resolve => setTimeout(resolve, ms));
+
+// --- KEY ROTATION LOGIC ---
+let currentKeyIndex = Math.floor(Math.random() * API_KEYS.length); // Start random
+
+function getNextKey() {
+    currentKeyIndex = (currentKeyIndex + 1) % API_KEYS.length;
+    return API_KEYS[currentKeyIndex];
+}
+
+// Helper to create AI client with specific key
+function createAIClient(key) {
+    return new GoogleGenAI({ apiKey: key });
+}
 
 async function getGeminiResponse(userId, userMessage) {
   if (!globalChatData[userId]) globalChatData[userId] = { history: [] };
@@ -85,101 +107,92 @@ async function getGeminiResponse(userId, userMessage) {
       saveMemory();
   };
 
-  const createChat = async (history) => {
-    return await ai.chats.create({
-      model: 'gemini-2.5-flash',
-      config: { systemInstruction: NZT_INSTRUCTION, temperature: 0.7 },
-      history: history || []
-    });
+  // Helper: Try to generate content with Key Rotation
+  const executeWithRetry = async (history, message, attempt = 0) => {
+      // Max attempts = number of keys * 2 (try each key twice roughly)
+      if (attempt >= API_KEYS.length * 2) {
+          throw new Error("ALL_KEYS_EXHAUSTED");
+      }
+
+      const activeKey = API_KEYS[currentKeyIndex]; // Use current key
+      const ai = createAIClient(activeKey);
+
+      try {
+          // Re-create chat with the selected key
+          const chat = await ai.chats.create({
+              model: 'gemini-2.5-flash',
+              config: { systemInstruction: NZT_INSTRUCTION, temperature: 0.7 },
+              history: history || []
+          });
+
+          const result = await chat.sendMessage({ message: message });
+          return result.text;
+
+      } catch (error) {
+          const isRateLimit = error.status === 429 || (error.message && error.message.includes('429'));
+          
+          if (isRateLimit) {
+              console.warn(`⚠️ Key ${currentKeyIndex + 1} Limit Hit (429). Rotating...`);
+              getNextKey(); // Switch to next key immediately
+              // Retry immediately with new key
+              return executeWithRetry(history, message, attempt + 1);
+          }
+          
+          throw error; // Other errors (500, etc) bubble up
+      }
   };
 
-  // HELPER: Send with 429 Rate Limit Handling
-  const safeSendMessage = async (chat, text, retries = 1) => {
-    try {
-        const result = await chat.sendMessage({ message: text });
-        return result.text;
-    } catch (error) {
-        // Detect Rate Limit (429)
-        if (error.status === 429 || (error.message && error.message.includes('429'))) {
-            if (retries > 0) {
-                console.warn(`⏳ Rate Limit Hit for user ${userId}. Waiting 15s...`);
-                await sleep(15000); // Wait 15 seconds
-                return await safeSendMessage(chat, text, retries - 1);
-            } else {
-                throw new Error("RATE_LIMIT_EXHAUSTED");
-            }
-        }
-        throw error;
-    }
+  // Helper: Stateless fallback with Key Rotation
+  const executeStatelessWithRetry = async (prompt, attempt = 0) => {
+      if (attempt >= API_KEYS.length * 2) throw new Error("ALL_KEYS_EXHAUSTED");
+
+      const activeKey = API_KEYS[currentKeyIndex];
+      const ai = createAIClient(activeKey);
+
+      try {
+          const result = await ai.models.generateContent({
+              model: 'gemini-2.5-flash',
+              config: { systemInstruction: NZT_INSTRUCTION },
+              contents: prompt
+          });
+          return result.text;
+      } catch (error) {
+          if (error.status === 429 || (error.message && error.message.includes('429'))) {
+              console.warn(`⚠️ Key ${currentKeyIndex + 1} Limit Hit (Stateless). Rotating...`);
+              getNextKey();
+              return executeStatelessWithRetry(prompt, attempt + 1);
+          }
+          throw error;
+      }
   };
 
   try {
-    // LEVEL 1: Existing Session
-    let chat = activeChatSessions.get(userId);
-    if(!chat) {
-        chat = await createChat(globalChatData[userId].history);
-        activeChatSessions.set(userId, chat);
-    }
-    
-    const responseText = await safeSendMessage(chat, userMessage);
+    // LEVEL 1 & 2 combined in executeWithRetry
+    const responseText = await executeWithRetry(globalChatData[userId].history, userMessage);
     updateHistory(userId, userMessage, responseText);
     return responseText;
 
-  } catch (errorL1) {
-      if (errorL1.message === "RATE_LIMIT_EXHAUSTED") return "🚦 النظام مزدحم جداً حالياً (Rate Limit). يرجى الانتظار 20 ثانية ثم إعادة المحاولة.";
+  } catch (error) {
+      if (error.message === "ALL_KEYS_EXHAUSTED") {
+          return "🚦 النظام مزدحم جداً على جميع السيرفرات. يرجى الانتظار دقيقة.";
+      }
 
-      console.warn("⚠️ Level 1 Failed. Retrying...", errorL1.message);
-      activeChatSessions.delete(userId);
+      console.error("⚠️ Levels 1/2 Failed. Attempting Level 3 (Stateless)...", error.message);
 
+      // LEVEL 3: STATELESS FALLBACK
       try {
-        // LEVEL 2: Re-Initialize from History
-        const newChat = await createChat(globalChatData[userId].history);
-        activeChatSessions.set(userId, newChat);
+        globalChatData[userId].history = []; 
+        saveMemory();
+
+        const prompt = `[CONTEXT LOST] User said: "${userMessage}". Reply intelligently.`;
+        const responseText = await executeStatelessWithRetry(prompt);
         
-        const responseText = await safeSendMessage(newChat, userMessage);
         updateHistory(userId, userMessage, responseText);
         return responseText;
 
-      } catch (errorL2) {
-         if (errorL2.message === "RATE_LIMIT_EXHAUSTED") return "🚦 النظام مزدحم جداً حالياً. يرجى الانتظار قليلاً.";
-
-         console.error("⚠️ Level 2 Failed. Attempting Level 3...", errorL2.message);
-
-         // LEVEL 3: STATELESS FALLBACK (For corrupted history ONLY)
-         try {
-            globalChatData[userId].history = []; 
-            saveMemory();
-
-            const prompt = `[CONTEXT LOST] User said: "${userMessage}". Reply intelligently.`;
-            
-            // Generate content directly (Stateless)
-            // We implement simple retry here too manually
-            let result;
-            try {
-                 result = await ai.models.generateContent({
-                    model: 'gemini-2.5-flash',
-                    config: { systemInstruction: NZT_INSTRUCTION },
-                    contents: prompt
-                });
-            } catch(e) {
-                if (e.status === 429) {
-                     await sleep(15000);
-                     result = await ai.models.generateContent({
-                        model: 'gemini-2.5-flash',
-                        config: { systemInstruction: NZT_INSTRUCTION },
-                        contents: prompt
-                    });
-                } else throw e;
-            }
-
-            const responseText = result.text;
-            updateHistory(userId, userMessage, responseText);
-            return responseText;
-
-         } catch (errorL3) {
-             console.error("❌ Level 3 Failed:", errorL3);
-             return "همم.. يبدو أنني استغرقت في التفكير وفقدت حبل أفكاري 😅\nهل يمكنك تذكيري بآخر نقطة؟";
-         }
+      } catch (errorL3) {
+         console.error("❌ Level 3 Failed:", errorL3);
+         return "همم.. يبدو أنني استغرقت في التفكير وفقدت حبل أفكاري 😅\nهل يمكنك تذكيري بآخر نقطة؟";
       }
   }
 }
@@ -221,7 +234,7 @@ bot.action(/rate_(\d)/, async (ctx) => {
     }
 });
 
-app.get('/', (req, res) => res.send('NZT Core Online v3.3 (RateLimit Guard)'));
+app.get('/', (req, res) => res.send(`NZT Core v4.0 (Multi-Key: ${API_KEYS.length} keys)`));
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
     console.log('Running on port', PORT);
@@ -231,7 +244,7 @@ app.listen(PORT, () => {
     }, 14 * 60 * 1000); 
 });
 
-// Enable Graceful Shutdown to prevent Telegram 409 Conflicts
+// Enable Graceful Shutdown
 bot.launch({ dropPendingUpdates: true });
 process.once('SIGINT', () => bot.stop('SIGINT'));
 process.once('SIGTERM', () => bot.stop('SIGTERM'));
