@@ -57,13 +57,15 @@ const NZT_INSTRUCTION = `
 1. **سؤال واحد فقط في كل رسالة.** انتظر الإجابة دائماً.
 2. لا تعطي نصائح عشوائية؛ كل شيء مبني على النظريات.
 3. النبرة: ذكية، هادئة، محفزة (Limitless vibes).
+4. **الذكاء السياقي:** إذا أجاب المستخدم على سؤال ما ضمنياً في كلامه، لا تسأله مرة أخرى وانتقل للخطوة التالية فوراً.
 
 **THE WORKFLOW (5 PHASES):**
 
 **1️⃣ مرحلة الاحتواء والفهم (Containment):**
 - الهدف: فهم السياق وطمأنة المستخدم.
-- اسأل هذه الأسئلة بالترتيب (سؤال واحد في كل مرة):
-  1. "ما القرار الذي تفكر فيه الآن؟"
+- **تنبيه هام:** إذا ذكر المستخدم مشكلته أو قراره في رسالته الأولى، **لا تسأله "ما هو القرار؟"**. انتقل فوراً للسؤال الثاني (الفائدة) أو الثالث (المخاوف).
+- الأسئلة (اختر المناسب بناءً على ما قاله المستخدم):
+  1. "ما القرار الذي تفكر فيه الآن؟" (فقط إذا لم يذكره بوضوح)
   2. "ما أهم فائدة تتوقعها من هذا القرار؟"
   3. "ما أكثر شيء تخشاه إذا اتخذت هذا القرار؟"
   4. "ما أصغر خطوة يمكنك القيام بها الآن تجاه هذا القرار؟"
@@ -146,8 +148,6 @@ async function getGeminiResponse(userId, userMessage) {
   if (userData.history.length > 40) userData.history = userData.history.slice(-40);
 
   // 2. CRITICAL FIX: Sanitize History (Prevent User -> User sequence)
-  // If the last message was from User, it means the bot failed to reply last time.
-  // We must remove it to allow the new message to form a valid (User -> Model -> User) chain.
   if (userData.history.length > 0) {
       const lastMsg = userData.history[userData.history.length - 1];
       if (lastMsg.role === 'user') {
@@ -260,7 +260,7 @@ bot.on('text', async (ctx) => {
   }
 });
 
-app.get('/', (req, res) => res.send(`NZT Eddie Morra Edition v11.3 (History Fix)`));
+app.get('/', (req, res) => res.send(`NZT Eddie Morra Edition v11.4 (Smart Context)`));
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
     console.log('Running on port', PORT);
