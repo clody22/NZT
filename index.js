@@ -142,8 +142,8 @@ async function getGeminiResponse(userId, userMessage) {
   
   const userData = globalChatData[userId];
   
-  // Basic context window management
-  if (userData.history.length > 50) userData.history = userData.history.slice(-50);
+  // Context window management
+  if (userData.history.length > 40) userData.history = userData.history.slice(-40);
 
   const updateHistory = (uId, uMsg, mMsg) => {
       globalChatData[uId].history.push({ role: 'user', parts: [{ text: uMsg }] });
@@ -154,13 +154,13 @@ async function getGeminiResponse(userId, userMessage) {
   const executeWithRetry = async (history, message, attempt = 0) => {
       if (API_KEYS.length === 0) throw new Error("NO_KEYS");
 
+      // Stop after trying all keys twice
       if (attempt >= API_KEYS.length * 2) {
-          return "⚠️ الشبكة مشغولة جداً. يرجى المحاولة لاحقاً.";
+          return "🤯 *عقلي يمر بحالة من التدفق الزائد (Overload).* \nالخوادم مشغولة جداً الآن بسبب كثرة البيانات. من فضلك، امنحني دقيقة واحدة للراحة ثم حاول مجدداً.";
       }
 
       const activeKey = API_KEYS[currentKeyIndex];
       const ai = createAIClient(activeKey);
-      
       const modelName = 'gemini-2.5-flash';
 
       try {
@@ -168,7 +168,8 @@ async function getGeminiResponse(userId, userMessage) {
               model: modelName,
               config: { 
                   systemInstruction: NZT_INSTRUCTION,
-                  thinkingConfig: { thinkingBudget: 4096 } 
+                  // Reduced budget to save quota while keeping reasoning capabilities
+                  thinkingConfig: { thinkingBudget: 2048 } 
               },
               history: history || []
           });
@@ -177,9 +178,16 @@ async function getGeminiResponse(userId, userMessage) {
           return result.text;
 
       } catch (error) {
-          console.log(`⚠️ Error on ${modelName} (Key index ${currentKeyIndex}): ${error.message}`);
+          const isQuota = error.message?.includes('429') || error.message?.includes('quota');
+          console.log(`⚠️ Error on ${modelName} (Key index ${currentKeyIndex}): ${isQuota ? 'QUOTA_EXCEEDED' : error.message}`);
+          
+          // Rotate key immediately
           getNextKey();
-          await sleep(1000);
+          
+          // Exponential backoff: Wait longer if it's a quota issue
+          const delayTime = isQuota ? 1500 + (attempt * 1000) : 1000;
+          await sleep(delayTime);
+          
           return executeWithRetry(history, message, attempt + 1);
       }
   };
@@ -189,7 +197,7 @@ async function getGeminiResponse(userId, userMessage) {
     updateHistory(userId, userMessage, responseText);
     return responseText;
   } catch (error) {
-      return "⚠️ حدث خطأ غير متوقع.";
+      return "⚠️ حدث خطأ غير متوقع في النظام.";
   }
 }
 
@@ -226,7 +234,7 @@ bot.on('text', async (ctx) => {
   await safeReply(ctx, response);
 });
 
-app.get('/', (req, res) => res.send(`NZT Eddie Morra Edition v11.0`));
+app.get('/', (req, res) => res.send(`NZT Eddie Morra Edition v11.1 (Stable)`));
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
     console.log('Running on port', PORT);
