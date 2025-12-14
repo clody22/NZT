@@ -168,7 +168,7 @@ async function getGeminiResponse(userId, userMessage) {
               model: modelName,
               config: { 
                   systemInstruction: NZT_INSTRUCTION,
-                  // Reduced budget to save quota while keeping reasoning capabilities
+                  // Balanced Thinking Budget: Enough for reasoning, light on quota
                   thinkingConfig: { thinkingBudget: 2048 } 
               },
               history: history || []
@@ -184,7 +184,7 @@ async function getGeminiResponse(userId, userMessage) {
           // Rotate key immediately
           getNextKey();
           
-          // Exponential backoff: Wait longer if it's a quota issue
+          // Exponential backoff
           const delayTime = isQuota ? 1500 + (attempt * 1000) : 1000;
           await sleep(delayTime);
           
@@ -211,9 +211,7 @@ bot.start(async (ctx) => {
   }
   saveMemory();
   
-  ctx.sendChatAction('typing');
-  
-  // THE DRAMATIC LIMITLESS INTRO
+  // OPTIMIZATION: Send intro directly without AI to save quota and ensure immediate response
   const introText = `🧠💊 توقف… وأغلق عينيك للحظة.
 تخيل أن عقلك الآن يرى كل الاحتمالات، كل النتائج الممكنة، كل الفرص المخفية.
 ليس شعورًا… ليس حدسًا… بل حسابات، أنماط، احتمالات، ونظريات علمية ⚛️📐🧠
@@ -224,17 +222,26 @@ bot.start(async (ctx) => {
 خطوة بخطوة، سأريك الطريق…
 💡 الآن، أخبرني: **ما هو القرار الذي تريد أن نكشف له كل الاحتمالات؟**`;
 
-  const initial = await getGeminiResponse(ctx.from.id, `المستخدم بدأ للتو. لا ترد بتحليل. فقط أرسل لي بالضبط وبحرفية هذه الرسالة الترحيبية: "${introText}"`);
-  await safeReply(ctx, initial);
+  await safeReply(ctx, introText);
 });
 
 bot.on('text', async (ctx) => {
-  ctx.sendChatAction('typing');
-  const response = await getGeminiResponse(ctx.from.id, ctx.message.text);
-  await safeReply(ctx, response);
+  // Continuous typing indicator loop
+  const typingInterval = setInterval(() => {
+    ctx.sendChatAction('typing').catch(() => {});
+  }, 4000); // Telegram typing action lasts ~5s, refresh every 4s
+
+  try {
+    const response = await getGeminiResponse(ctx.from.id, ctx.message.text);
+    clearInterval(typingInterval);
+    await safeReply(ctx, response);
+  } catch (e) {
+    clearInterval(typingInterval);
+    await safeReply(ctx, "⚠️ حدث خطأ، حاول مرة أخرى.");
+  }
 });
 
-app.get('/', (req, res) => res.send(`NZT Eddie Morra Edition v11.1 (Stable)`));
+app.get('/', (req, res) => res.send(`NZT Eddie Morra Edition v11.2 (Instant Start)`));
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
     console.log('Running on port', PORT);
@@ -244,7 +251,7 @@ app.listen(PORT, () => {
     }, 14 * 60 * 1000); 
 });
 
-// ROBUST LAUNCH WITH RETRY LOGIC FOR 409 CONFLICTS
+// ROBUST LAUNCH
 const launchBot = async () => {
     try {
         await bot.launch({ dropPendingUpdates: true });
@@ -252,7 +259,7 @@ const launchBot = async () => {
     } catch (err) {
         if (err.description && err.description.includes('conflict')) {
             console.log("⚠️ Conflict error (409). Old instance still running. Retrying in 5 seconds...");
-            setTimeout(launchBot, 5000); // Retry after 5s
+            setTimeout(launchBot, 5000); 
         } else {
             console.error("❌ Fatal launch error:", err);
         }
