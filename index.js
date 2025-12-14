@@ -142,8 +142,19 @@ async function getGeminiResponse(userId, userMessage) {
   
   const userData = globalChatData[userId];
   
-  // Context window management
+  // 1. Context window management
   if (userData.history.length > 40) userData.history = userData.history.slice(-40);
+
+  // 2. CRITICAL FIX: Sanitize History (Prevent User -> User sequence)
+  // If the last message was from User, it means the bot failed to reply last time.
+  // We must remove it to allow the new message to form a valid (User -> Model -> User) chain.
+  if (userData.history.length > 0) {
+      const lastMsg = userData.history[userData.history.length - 1];
+      if (lastMsg.role === 'user') {
+          console.log(`⚠️ Fixing broken history for user ${userId} (User->User detected)`);
+          userData.history.pop(); 
+      }
+  }
 
   const updateHistory = (uId, uMsg, mMsg) => {
       globalChatData[uId].history.push({ role: 'user', parts: [{ text: uMsg }] });
@@ -154,9 +165,8 @@ async function getGeminiResponse(userId, userMessage) {
   const executeWithRetry = async (history, message, attempt = 0) => {
       if (API_KEYS.length === 0) throw new Error("NO_KEYS");
 
-      // Stop after trying all keys twice
       if (attempt >= API_KEYS.length * 2) {
-          return "🤯 *عقلي يمر بحالة من التدفق الزائد (Overload).* \nالخوادم مشغولة جداً الآن بسبب كثرة البيانات. من فضلك، امنحني دقيقة واحدة للراحة ثم حاول مجدداً.";
+          return "🤯 *عقلي يمر بحالة من التدفق الزائد (Overload).* \nالخوادم مشغولة جداً الآن. من فضلك، امنحني دقيقة واحدة للراحة ثم حاول مجدداً.";
       }
 
       const activeKey = API_KEYS[currentKeyIndex];
@@ -168,26 +178,37 @@ async function getGeminiResponse(userId, userMessage) {
               model: modelName,
               config: { 
                   systemInstruction: NZT_INSTRUCTION,
-                  // Balanced Thinking Budget: Enough for reasoning, light on quota
                   thinkingConfig: { thinkingBudget: 2048 } 
               },
               history: history || []
           });
 
-          const result = await chat.sendMessage({ message: message });
+          // Timeout Race to prevent hanging forever
+          const responsePromise = chat.sendMessage({ message: message });
+          const timeoutPromise = new Promise((_, reject) => 
+              setTimeout(() => reject(new Error("TIMEOUT")), 50000)
+          );
+
+          const result = await Promise.race([responsePromise, timeoutPromise]);
           return result.text;
 
       } catch (error) {
           const isQuota = error.message?.includes('429') || error.message?.includes('quota');
-          console.log(`⚠️ Error on ${modelName} (Key index ${currentKeyIndex}): ${isQuota ? 'QUOTA_EXCEEDED' : error.message}`);
+          const isTimeout = error.message?.includes('TIMEOUT');
+          
+          console.log(`⚠️ Error on ${modelName} (Key ${currentKeyIndex}): ${isQuota ? 'QUOTA' : error.message}`);
           
           // Rotate key immediately
           getNextKey();
           
-          // Exponential backoff
-          const delayTime = isQuota ? 1500 + (attempt * 1000) : 1000;
-          await sleep(delayTime);
+          // Smart Delay: If we haven't tried all keys yet, retry FAST (500ms). 
+          // Only wait longer if we are looping back to the first key.
+          let delayTime = 500;
+          if (attempt >= API_KEYS.length) {
+              delayTime = 2000 + ((attempt - API_KEYS.length) * 1000);
+          }
           
+          await sleep(delayTime);
           return executeWithRetry(history, message, attempt + 1);
       }
   };
@@ -211,7 +232,6 @@ bot.start(async (ctx) => {
   }
   saveMemory();
   
-  // OPTIMIZATION: Send intro directly without AI to save quota and ensure immediate response
   const introText = `🧠💊 توقف… وأغلق عينيك للحظة.
 تخيل أن عقلك الآن يرى كل الاحتمالات، كل النتائج الممكنة، كل الفرص المخفية.
 ليس شعورًا… ليس حدسًا… بل حسابات، أنماط، احتمالات، ونظريات علمية ⚛️📐🧠
@@ -226,10 +246,9 @@ bot.start(async (ctx) => {
 });
 
 bot.on('text', async (ctx) => {
-  // Continuous typing indicator loop
   const typingInterval = setInterval(() => {
     ctx.sendChatAction('typing').catch(() => {});
-  }, 4000); // Telegram typing action lasts ~5s, refresh every 4s
+  }, 4000); 
 
   try {
     const response = await getGeminiResponse(ctx.from.id, ctx.message.text);
@@ -241,7 +260,7 @@ bot.on('text', async (ctx) => {
   }
 });
 
-app.get('/', (req, res) => res.send(`NZT Eddie Morra Edition v11.2 (Instant Start)`));
+app.get('/', (req, res) => res.send(`NZT Eddie Morra Edition v11.3 (History Fix)`));
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
     console.log('Running on port', PORT);
@@ -251,14 +270,12 @@ app.listen(PORT, () => {
     }, 14 * 60 * 1000); 
 });
 
-// ROBUST LAUNCH
 const launchBot = async () => {
     try {
         await bot.launch({ dropPendingUpdates: true });
         console.log("✅ Bot launched successfully");
     } catch (err) {
         if (err.description && err.description.includes('conflict')) {
-            console.log("⚠️ Conflict error (409). Old instance still running. Retrying in 5 seconds...");
             setTimeout(launchBot, 5000); 
         } else {
             console.error("❌ Fatal launch error:", err);
