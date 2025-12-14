@@ -1,7 +1,7 @@
 {
   "name": "nzt-decision-bot",
-  "version": "9.0.0",
-  "description": "NZT Bot Expert Council Edition (Empathic Companion)",
+  "version": "10.0.0",
+  "description": "NZT Bot Limitless Edition",
   "main": "index.js",
   "scripts": {
     "start": "node index.js"
