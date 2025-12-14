@@ -1,7 +1,7 @@
 {
   "name": "nzt-decision-bot",
-  "version": "11.5.0",
-  "description": "NZT Bot Eddie Morra Edition (Stability Fix)",
+  "version": "12.0.0",
+  "description": "NZT Bot Eddie Morra Edition (Deep Flow)",
   "main": "index.js",
   "scripts": {
     "start": "node index.js"
