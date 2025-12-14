@@ -1,7 +1,7 @@
 {
   "name": "nzt-decision-bot",
-  "version": "12.0.0",
-  "description": "NZT Bot Eddie Morra Edition (Deep Flow)",
+  "version": "13.0.0",
+  "description": "NZT Bot Eddie Morra Edition (Internal Analysis)",
   "main": "index.js",
   "scripts": {
     "start": "node index.js"
