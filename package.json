@@ -1,7 +1,7 @@
 {
   "name": "nzt-decision-bot",
-  "version": "8.1.0",
-  "description": "NZT Bot Expert Council Edition (Thinking Flash + Auto Retry)",
+  "version": "9.0.0",
+  "description": "NZT Bot Expert Council Edition (Empathic Companion)",
   "main": "index.js",
   "scripts": {
     "start": "node index.js"
