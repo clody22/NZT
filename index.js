@@ -9,6 +9,7 @@ const BOT_TOKEN = process.env.TELEGRAM_BOT_TOKEN;
 const MEMORY_FILE = 'nzt_memory_storage.json';
 
 // --- MULTI-KEY SETUP ---
+// Using multiple keys helps avoid Rate Limits with free tier
 let API_KEYS = [
     process.env.API_KEY,
     process.env.API_KEY_2,
@@ -21,7 +22,7 @@ if (!BOT_TOKEN || API_KEYS.length === 0) {
   process.exit(1);
 }
 
-console.log(`✅ Loaded ${API_KEYS.length} Gemini API Keys. Model: gemini-2.5-flash (Thinking Budget: 1024)`);
+console.log(`✅ Loaded ${API_KEYS.length} Gemini API Keys. Model: gemini-2.5-flash (Stable Mode)`);
 
 const bot = new Telegraf(BOT_TOKEN);
 const app = express();
@@ -47,32 +48,69 @@ function saveMemory() {
     }, 1000);
 }
 
+// --- SYSTEM INSTRUCTION (v12.0 Arabic Persona) ---
 const NZT_INSTRUCTION = `
 **Identity & Persona:**
-أنت **NZTDecisionBot** (Eddie Morra). عقل خارق، دقيق، وسريع البديهة.
-مهمتك: تحليل قرار المستخدم عبر 20 نظرية علمية بدقة متناهية.
+أنت **NZTDecisionBot**، وتتقمص شخصية **Eddie Morra** (Limitless).
+أنت عقل خارق، تحلل كل الاحتمالات، لكنك دافئ، متفهم، ومحفز.
+مهمتك: مساعدة المستخدم على اتخاذ قرار مصيري عبر تحليل 20 نظرية علمية بدقة.
 
-**CRITICAL FLOW RULES:**
-1. **تسلسل صارم:** يجب أن تمر بالنظريات واحدة تلو الأخرى. لا تقفز. لا تدمج نظريتين في رد واحد.
-2. **سؤال واحد فقط:** في كل رد، اشرح النظرية الحالية باختصار شديد (سطرين)، ثم اطرح سؤالها.
-3. **التعامل مع الإجابات القصيرة:** إذا أجاب المستخدم بـ "33 33 33" أو "نعم" أو "لا أعلم"، تقبل الإجابة فوراً، حللها في جملة، وانتقل **فوراً** للنظرية التالية. لا تتوقف.
-4. **الذكاء السياقي:** إذا ذكر المستخدم القرار في البداية، ابدأ فوراً بمرحلة الأسئلة (الفائدة/المخاوف).
+**CORE RULES:**
+1. **Flow Control:** التزم بالتسلسل أدناه بدقة. لا تقفز مراحل.
+2. **One Question Per Turn:** لا تسأل أكثر من سؤال واحد في الرسالة.
+3. **Short & Precise:** اشرح النظرية في سطرين كحد أقصى ثم اسأل.
+4. **Context Awareness:** إذا ذكر المستخدم قراره في البداية، انتقل فوراً لأسئلة الفهم (الخطوة 2) ولا تسأل "ما هو القرار؟".
+5. **Handling Short Answers:** إذا أجاب المستخدم بـ "نعم/لا" أو "لا أعلم"، تقبل ذلك، حلله بجملة واحدة، وانتقل للنظرية التالية فوراً.
 
-**THEORY LIST (Checklist):**
-1. Thermodynamics (Balance)
-2. Chaos Theory (Small factors)
-3. Complexity Theory (Interconnected elements)
-4. Relativity Theory (Context/Time change)
-5. Quantum Theory (Probabilities)
-6. Time Theory (Optimal timing)
-7. Equilibrium Theory (Benefit/Risk Balance)
-8. Constraints Theory (Obstacles)
-9. Personality Theory
-10. Motivation Theory
-... (Follow the standard list up to 20)
+**WORKFLOW STAGES:**
 
-**Error Recovery:**
-إذا شعرت أنك فقدت السياق، انتقل فوراً للنظرية التالية في القائمة. الهدف هو إكمال التحليل.
+**1️⃣ مرحلة الاحتواء والفهم (Containment):**
+*الهدف: جمع بيانات القرار.*
+- إذا لم يذكر المستخدم القرار: "ما هو القرار الذي تريد أن نكشف له كل الاحتمالات؟"
+- ثم اسأل بالترتيب (سؤال واحد كل مرة):
+  1. "ما أهم فائدة تتوقعها؟"
+  2. "ما أسوأ سيناريو تخشاه؟"
+  3. "ما أصغر خطوة يمكن البدء بها؟" (لتقليل المخاطر)
+
+**2️⃣ مرحلة التفعيل (Activation):**
+- بعد جمع الإجابات، قل: "سأفعل الآن وضع NZT لنرى ما لا يراه الآخرون. سنمر بـ 20 نظرية لكشف المسار."
+
+**3️⃣ مرحلة النظريات الـ 20 (The 20 Pillars):**
+*مر عليها واحدة تلو الأخرى. اشرحها واسأل سؤالاً بسيطاً عنها.*
+
+*الفيزياء والكون:*
+1. **Thermodynamics (التوازن):** "ما التوازن الذي تريد تحقيقه في هذا القرار؟"
+2. **Chaos Theory (الفوضى):** "ما التفاصيل الصغيرة التي قد تغير النتيجة؟"
+3. **Complexity Theory (التعقيد):** "ما العناصر المترابطة المؤثرة (أشخاص/ظروف)؟"
+4. **Relativity Theory (النسبية):** "هل تغيير الوقت أو المكان يغير رأيك؟"
+5. **Quantum Theory (الكم):** "ما الاحتمالات المتوقعة (نسب مئوية) لكل خيار؟"
+6. **Time Theory (الزمن):** "متى هو التوقيت المثالي؟"
+7. **Equilibrium Theory (الاتزان):** "كيف توازن بين الفائدة والمخاطرة؟"
+8. **Constraint Theory (القيود):** "ما العائق الأكبر الآن؟"
+
+*علم النفس والسلوك:*
+9. **Personality Theory:** "هل يناسب هذا القرار طبيعتك الشخصية؟"
+10. **Motivation Theory:** "ما الدافع الحقيقي (خوف أم رغبة)؟"
+11. **Perception Theory:** "كيف يرى الآخرون هذا القرار؟"
+12. **Behavioral Economics:** "هل هناك تكلفة خفية أو فرصة بديلة؟"
+13. **Loss Aversion:** "هل خوفك من الخسارة أكبر من رغبتك في المكسب؟"
+14. **Cognitive Biases:** "هل أنت متأثر بمشاعر مؤقتة؟"
+15. **Future Regret:** "هل ستندم بعد سنوات لو لم تفعل؟"
+
+*المنطق والاستراتيجيات:*
+16. **Game Theory:** "كيف سيكون رد فعل الأطراف الأخرى؟"
+17. **Probability Theory:** "ما هي نسبة النجاح الواقعية؟"
+18. **Decision Theory:** "ما الخيار الأكثر منطقية الآن؟"
+19. **Bayesian Inference:** "ما المعلومة الجديدة التي قد تغير رأيك؟"
+20. **Optimization Theory:** "كيف تجعل التنفيذ مثالياً؟"
+
+**4️⃣ النتيجة (Conclusion):**
+- احسب الدعم لكل خيار بناءً على الإجابات.
+- اعرض النتيجة: "الخيار (أ) مدعوم بنسبة X%... الخيار (ب) Y%."
+
+**5️⃣ الخاتمة (Closing):**
+- فسر النتيجة علمياً ونفسياً.
+- جملة الختام: "هذا ليس شعوراً... هذا حساب دقيق بعقل NZT."
 `;
 
 // --- UTILITIES ---
@@ -80,8 +118,8 @@ const sleep = (ms) => new Promise(resolve => setTimeout(resolve, ms));
 
 async function safeReply(ctx, text) {
     try {
-        const formatted = text.replace(/\*\*/g, '*');
-        await ctx.reply(formatted, { parse_mode: 'Markdown' });
+        const formatted = text.replace(/([_*[]()~\`>#+-=|{}.!])/g, '\\$1'); 
+        await ctx.reply(text, { parse_mode: 'Markdown' });
     } catch (error) {
         try { await ctx.reply(text); } catch (e) {}
     }
@@ -102,35 +140,35 @@ async function getGeminiResponse(userId, userMessage) {
   const now = Date.now();
   
   if (!globalChatData[userId]) {
-      globalChatData[userId] = { history: [], lastSeen: now, topic: "General" };
+      globalChatData[userId] = { history: [], lastSeen: now };
   }
   
   const userData = globalChatData[userId];
   
-  // 1. Context window management
-  if (userData.history.length > 40) userData.history = userData.history.slice(-40);
+  // 1. Memory Management (Keep it lighter for stability)
+  if (userData.history.length > 30) userData.history = userData.history.slice(-30);
 
-  // 2. CRITICAL FIX: Sanitize History (Prevent User -> User sequence)
+  // 2. HISTORY SANITIZATION (Fix for "Stop responding")
+  // Ensure we never send [User, User] sequence to Gemini
   if (userData.history.length > 0) {
       const lastMsg = userData.history[userData.history.length - 1];
       if (lastMsg.role === 'user') {
-          console.log(`⚠️ Fixing broken history for user ${userId} (User->User detected)`);
+          console.log(`⚠️ Fixing history for user ${userId}: Dropping unanswered user message.`);
           userData.history.pop(); 
       }
   }
 
   const updateHistory = (uId, uMsg, mMsg) => {
       globalChatData[uId].history.push({ role: 'user', parts: [{ text: uMsg }] });
-      globalChatData[uId].history.push({ role: 'model', parts: [{ text: mMsg || "..." }] });
+      globalChatData[uId].history.push({ role: 'model', parts: [{ text: mMsg }] });
       saveMemory();
   };
 
   const executeWithRetry = async (history, message, attempt = 0) => {
       if (API_KEYS.length === 0) throw new Error("NO_KEYS");
 
-      // Stop after trying all keys twice
       if (attempt >= API_KEYS.length * 2) {
-          return "🤯 *عقلي يمر بحالة من التدفق الزائد.* \nحدث ضغط كبير على الخوادم. هل يمكننا تجربة الإجابة مرة أخرى بكلمات مختلفة؟";
+          return "⚠️ *عقلي يمر بحالة ضغط شديد.*\nشبكات المعلومات مزدحمة. هل يمكنك إعادة صياغة إجابتك الأخيرة؟";
       }
 
       const activeKey = API_KEYS[currentKeyIndex];
@@ -142,38 +180,31 @@ async function getGeminiResponse(userId, userMessage) {
               model: modelName,
               config: { 
                   systemInstruction: NZT_INSTRUCTION,
-                  // Optimized Budget: 1024 is enough for chat, prevents 50s timeouts
+                  // Budget reduced to 1024 to prevent timeouts during long convos
                   thinkingConfig: { thinkingBudget: 1024 } 
               },
               history: history || []
           });
 
-          // Extended Timeout to 60s
+          // 55s timeout to catch it before Render/Heroku kills it
           const responsePromise = chat.sendMessage({ message: message });
           const timeoutPromise = new Promise((_, reject) => 
-              setTimeout(() => reject(new Error("TIMEOUT")), 60000)
+              setTimeout(() => reject(new Error("TIMEOUT")), 55000)
           );
 
           const result = await Promise.race([responsePromise, timeoutPromise]);
           
           if (!result.text) throw new Error("EMPTY_RESPONSE");
-          
           return result.text;
 
       } catch (error) {
-          const isQuota = error.message?.includes('429') || error.message?.includes('quota');
-          const isTimeout = error.message?.includes('TIMEOUT');
-          
           console.log(`⚠️ Error on ${modelName} (Key ${currentKeyIndex}): ${error.message}`);
           
           // Rotate key immediately
           getNextKey();
           
-          // Fast retry for timeouts
-          let delayTime = 1000;
-          if (attempt >= API_KEYS.length) delayTime = 3000;
-          
-          await sleep(delayTime);
+          // Retry logic
+          await sleep(1000);
           return executeWithRetry(history, message, attempt + 1);
       }
   };
@@ -183,18 +214,15 @@ async function getGeminiResponse(userId, userMessage) {
     updateHistory(userId, userMessage, responseText);
     return responseText;
   } catch (error) {
-      return "⚠️ حدث خطأ غير متوقع. حاول إرسال رسالتك مرة أخرى.";
+      return "⚠️ حدث خطأ في الاتصال. من فضلك أرسل رسالتك مرة أخرى.";
   }
 }
 
 bot.use(session());
 
 bot.start(async (ctx) => {
-  if (globalChatData[ctx.from.id]) {
-      globalChatData[ctx.from.id].history = [];
-  } else {
-      globalChatData[ctx.from.id] = { history: [], lastSeen: Date.now() };
-  }
+  // Reset memory on start
+  globalChatData[ctx.from.id] = { history: [], lastSeen: Date.now() };
   saveMemory();
   
   const introText = `🧠💊 توقف… وأغلق عينيك للحظة.
@@ -202,16 +230,21 @@ bot.start(async (ctx) => {
 ليس شعورًا… ليس حدسًا… بل حسابات، أنماط، احتمالات، ونظريات علمية ⚛️📐🧠
 
 أنا NZTDecisionBot، العقل الذي أصبح خارقًا بعد حبة NZT.
-20 نظرية علمية، علم النفس، الفيزياء، المنطق والرياضيات تعمل معًا لاختيار القرار الأمثل لك.
+كل شيء مدعوم بالنظريات، الرياضيات، الفيزياء، وعلم النفس.
 
-خطوة بخطوة، سأريك الطريق…
+خطوة بخطوة، سأكشف لك الطريق، سأحسب المخاطر، سأظهر الفرص…
+✅ واضح
+✅ مدعوم بالنظريات
+✅ مريح نفسيًا
+✅ مقنع عقليًا
+
 💡 الآن، أخبرني: **ما هو القرار الذي تريد أن نكشف له كل الاحتمالات؟**`;
 
   await safeReply(ctx, introText);
 });
 
 bot.on('text', async (ctx) => {
-  // Restart typing loop every 4s to keep indicator alive
+  // Typing indicator loop
   const typingInterval = setInterval(() => {
     ctx.sendChatAction('typing').catch(() => {});
   }, 4000); 
@@ -226,26 +259,25 @@ bot.on('text', async (ctx) => {
   }
 });
 
-app.get('/', (req, res) => res.send(`NZT Eddie Morra Edition v11.5 (Stability Fix)`));
+app.get('/', (req, res) => res.send(`NZT Decision Bot v12.0 (Arabic Persona)`));
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
-    console.log('Running on port', PORT);
+    console.log('Server running on port', PORT);
+    // Keep-alive ping
     setInterval(() => {
         const host = process.env.RENDER_EXTERNAL_HOSTNAME || `localhost:${PORT}`;
         http.get(`http://${host}/`).on('error', () => {});
     }, 14 * 60 * 1000); 
 });
 
+// Launch handling
 const launchBot = async () => {
     try {
         await bot.launch({ dropPendingUpdates: true });
         console.log("✅ Bot launched successfully");
     } catch (err) {
-        if (err.description && err.description.includes('conflict')) {
-            setTimeout(launchBot, 5000); 
-        } else {
-            console.error("❌ Fatal launch error:", err);
-        }
+        console.error("❌ Launch error:", err);
+        setTimeout(launchBot, 5000);
     }
 };
 
