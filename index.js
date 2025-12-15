@@ -21,7 +21,7 @@ if (!BOT_TOKEN || API_KEYS.length === 0) {
   process.exit(1);
 }
 
-console.log(`✅ Loaded ${API_KEYS.length} Gemini API Keys. Model: gemini-2.5-flash (v15.0 NZT Ultimate)`);
+console.log(`✅ Loaded ${API_KEYS.length} Gemini API Keys. Model: gemini-2.5-flash (v15.1 Smart Retry)`);
 
 const bot = new Telegraf(BOT_TOKEN);
 const app = express();
@@ -117,6 +117,7 @@ let currentKeyIndex = 0;
 function getNextKey() {
     if (API_KEYS.length === 0) return null;
     currentKeyIndex = (currentKeyIndex + 1) % API_KEYS.length;
+    console.log(`🔑 Switching to Key Index: ${currentKeyIndex}`);
     return API_KEYS[currentKeyIndex];
 }
 function createAIClient(key) { return new GoogleGenAI({ apiKey: key }); }
@@ -150,7 +151,11 @@ async function getGeminiResponse(userId, userMessage) {
 
   const executeWithRetry = async (history, message, attempt = 0) => {
       if (API_KEYS.length === 0) throw new Error("NO_KEYS");
-      if (attempt >= API_KEYS.length * 2) return "⚠️ النظام مشغول جداً. حاول مرة أخرى لاحقاً.";
+      
+      // Increased retry limit (3 cycles through all keys)
+      if (attempt >= API_KEYS.length * 3) {
+          return "⚠️ النظام مشغول جداً (ضغط شديد على الخوادم). الرجاء المحاولة بعد دقيقة.";
+      }
 
       const activeKey = API_KEYS[currentKeyIndex];
       const ai = createAIClient(activeKey);
@@ -175,8 +180,19 @@ async function getGeminiResponse(userId, userMessage) {
 
       } catch (error) {
           console.log(`⚠️ Error on ${modelName} (Key ${currentKeyIndex}): ${error.message}`);
+          
+          // Smart Backoff: Read delay from Google error message
+          let delay = 2000 * (attempt + 1); // Default backoff
+          const match = error.message.match(/retry in ([d.]+)s/);
+          if (match && match[1]) {
+             // Add 2 seconds buffer to what Google asks
+             delay = Math.ceil(parseFloat(match[1])) * 1000 + 2000;
+          }
+
+          console.log(`⏳ Waiting ${delay}ms before switching key...`);
+          await sleep(delay);
+          
           getNextKey();
-          await sleep(1000);
           return executeWithRetry(history, message, attempt + 1);
       }
   };
@@ -221,7 +237,7 @@ bot.on('text', async (ctx) => {
   }
 });
 
-app.get('/', (req, res) => res.send(`NZT Decision Bot v15.0 (NZT Ultimate Persona)`));
+app.get('/', (req, res) => res.send(`NZT Decision Bot v15.1 (Smart Retry Engine)`));
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
     console.log('Server running on port', PORT);
