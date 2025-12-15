@@ -1,7 +1,7 @@
 {
   "name": "nzt-decision-bot",
-  "version": "13.0.0",
-  "description": "NZT Bot Eddie Morra Edition (Internal Analysis)",
+  "version": "15.0.0",
+  "description": "NZT Bot Eddie Morra Edition (Ultimate Persona)",
   "main": "index.js",
   "scripts": {
     "start": "node index.js"
